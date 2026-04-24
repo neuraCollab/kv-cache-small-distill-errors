@@ -1,0 +1,26 @@
+pipeline:
+  dataset:
+    aime_24_count: 30
+    math_500_count: 50
+  seed: 42
+  sampling:
+    temperature: 0.0
+    top_p: 1.0
+    max_tokens: 32768
+  fdp:
+    context_window: 200
+    resync_lookahead: 500
+    cosmetic_cosine_threshold: 0.9
+    max_cosmetic_skips: 5
+    embed_model: sentence-transformers/all-MiniLM-L6-v2
+  judge:
+    model: claude-sonnet-4-6
+    temperature: 0.0
+    max_tokens: 400
+    cache_dir: .cache/judge
+    max_concurrent: 5
+    calibration_threshold: 0.7
+  hf_hub:
+    repo_id_env: HF_REPO_ID
+    repo_id_default_template: "{hf_user}/kv-trace-study"
+    repo_type: dataset

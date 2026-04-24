@@ -1,0 +1,30 @@
+quant_methods:
+  bf16:
+    engine: vllm
+    kv_cache_dtype: auto      # unquantized baseline
+    overrides: {}
+
+  fp8_e5m2:
+    engine: vllm
+    kv_cache_dtype: fp8_e5m2
+    overrides: {}
+
+  fp8_e4m3:
+    engine: vllm
+    kv_cache_dtype: fp8_e4m3
+    overrides: {}
+
+  hqq_int4:
+    engine: hf
+    hqq_nbits: 4
+    overrides:
+      # HF Transformers is slower; lower max_model_len for tight 7B budget.
+      max_model_len_override:
+        deepseek-r1-distill-qwen-7b: 16384
+
+  hqq_int2:
+    engine: hf
+    hqq_nbits: 2
+    overrides:
+      max_model_len_override:
+        deepseek-r1-distill-qwen-7b: 16384
