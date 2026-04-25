@@ -45,12 +45,17 @@ def row_normalize(m: np.ndarray) -> np.ndarray:
 
 
 def chi_square_test(m: np.ndarray) -> tuple[float, float, int]:
-    """Return (chi2, p_value, dof). Drops all-zero columns to avoid degenerate stats."""
+    """Return (chi2, p_value, dof).
+
+    All-zero columns are dropped before calling chi2_contingency to avoid
+    degenerate stats, but the reported `dof` is the nominal (rows-1)*(cols-1)
+    of the *original* 6-category matrix so reports stay comparable across runs.
+    """
     nonzero_cols = (m.sum(axis=0) > 0)
     m_clean = m[:, nonzero_cols]
-    chi2, p, dof, _ = chi2_contingency(m_clean)
-    # Rescale dof to always correspond to the full 6-category shape for reporting.
-    return float(chi2), float(p), int(dof)
+    chi2, p, _, _ = chi2_contingency(m_clean)
+    dof_full = (m.shape[0] - 1) * (m.shape[1] - 1)
+    return float(chi2), float(p), int(dof_full)
 
 
 def cramers_v(m: np.ndarray) -> float:

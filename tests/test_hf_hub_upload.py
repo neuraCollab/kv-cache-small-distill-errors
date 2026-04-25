@@ -49,7 +49,11 @@ def test_upload_idempotent_when_revision_exists(tmp_path, monkeypatch):
     f = tmp_path / "data.jsonl"
     f.write_text('{"a":1}\n')
     api = MagicMock()
-    api.list_repo_refs.return_value = MagicMock(branches=[MagicMock(name="traces-m-bf16")])
+    # MagicMock(name=...) sets the *mock's* repr name, not the .name attribute,
+    # so we have to assign .name explicitly for the branch lookup to match.
+    branch = MagicMock()
+    branch.name = "traces-m-bf16"
+    api.list_repo_refs.return_value = MagicMock(branches=[branch])
     monkeypatch.setenv("HF_REPO_ID", "me/kv")
     result = upload_dataset_file(f, revision_tag="traces-m-bf16", api=api)
     # idempotent short-circuit
