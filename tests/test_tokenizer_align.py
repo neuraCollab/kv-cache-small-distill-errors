@@ -31,5 +31,7 @@ def test_decode_window_clips_right():
     class FakeTokenizer:
         def decode(self, ids, skip_special_tokens=False):
             return "|".join(str(i) for i in ids)
+    # center near right edge with large context → window clipped to end of list,
+    # left side runs as far as it can (down to 0).
     result = decode_window(FakeTokenizer(), [1, 2, 3, 4, 5], center=4, context=10)
-    assert result == "3|4|5"
+    assert result == "1|2|3|4|5"

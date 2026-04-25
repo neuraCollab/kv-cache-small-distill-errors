@@ -12,6 +12,13 @@ except Exception:
     AutoTokenizer = None          # type: ignore[assignment]
     QuantizedCacheConfig = None   # type: ignore[assignment]
 
+# torch is optional at import time so CI (CPU-only, no torch) can still import
+# this module to test the contract via mocks. The actual GPU path requires it.
+try:
+    import torch  # type: ignore
+except Exception:
+    torch = None  # type: ignore[assignment]
+
 from kvtrace.config import ModelCfg, QuantCfg
 from kvtrace.dataset_loader import MathProblem
 from kvtrace.generators.base import GenerationResult, Generator
@@ -42,15 +49,18 @@ class HFGenerator(Generator):
             raise ValueError(f"HFGenerator requires engine='hf', got {quant_cfg.engine!r}")
         if quant_cfg.hqq_nbits not in (2, 4, 8):
             raise ValueError(f"HQQ nbits must be 2/4/8, got {quant_cfg.hqq_nbits!r}")
-        import torch  # local so tests mock module-level imports only
 
         self._hqq_nbits = quant_cfg.hqq_nbits
         self._model_cfg = model_cfg
         self._tokenizer = AutoTokenizer.from_pretrained(
             model_cfg.hf_id, trust_remote_code=model_cfg.trust_remote_code
         )
-        dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
-        torch_dtype = dtype_map.get(model_cfg.dtype, torch.bfloat16)
+        if torch is not None:
+            dtype_map = {"bfloat16": torch.bfloat16, "float16": torch.float16}
+            torch_dtype = dtype_map.get(model_cfg.dtype, torch.bfloat16)
+        else:
+            # CI (mocked AutoModelForCausalLM) doesn't need a real torch dtype.
+            torch_dtype = None
         self._model = AutoModelForCausalLM.from_pretrained(
             model_cfg.hf_id,
             torch_dtype=torch_dtype,
