@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -17,12 +18,12 @@ def test_judge_passes_golden_set(tmp_path: Path) -> None:
         pytest.skip("ANTHROPIC_API_KEY not set")
 
     from anthropic import Anthropic
-    client = Anthropic(api_key=api_key)
+    # Per-request timeout so a stalled HTTPS call fails fast instead of
+    # blocking the suite for the SDK default (600s).
+    client = Anthropic(api_key=api_key, timeout=30.0)
     judge = ClaudeJudge(client=client, model="claude-sonnet-4-6", cache_dir=tmp_path)
 
-    correct = 0
-    errors: list[str] = []
-    for ex in GOLDEN_SET:
+    def _judge_one(ex):
         r = judge.judge(
             problem=ex.problem,
             ground_truth=ex.ground_truth,
@@ -31,10 +32,21 @@ def test_judge_passes_golden_set(tmp_path: Path) -> None:
             common_prefix=ex.common_prefix,
             quant_method_name="test",
         )
-        if r.category == ex.gold_category:
-            correct += 1
-        else:
-            errors.append(f"{ex.id}: gold={ex.gold_category} got={r.category} ({r.rationale[:60]})")
+        return ex, r
+
+    correct = 0
+    errors: list[str] = []
+    # Run the 10 golden examples concurrently; prompt caching keeps the
+    # follow-up calls cheap once the first one warms the cache.
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        for i, (ex, r) in enumerate(pool.map(_judge_one, GOLDEN_SET), 1):
+            print(f"[{i}/{len(GOLDEN_SET)}] {ex.id}: gold={ex.gold_category} got={r.category}")
+            if r.category == ex.gold_category:
+                correct += 1
+            else:
+                errors.append(
+                    f"{ex.id}: gold={ex.gold_category} got={r.category} ({r.rationale[:60]})"
+                )
 
     accuracy = correct / len(GOLDEN_SET)
     msg = f"calibration {correct}/{len(GOLDEN_SET)} = {accuracy:.0%}. Errors:\n" + "\n".join(errors)

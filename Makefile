@@ -14,7 +14,7 @@ test-gpu:
 	pytest -m gpu
 
 test-live:
-	pytest -m live_api
+	pytest -m live_api -s -v
 
 test-all:
 	pytest
