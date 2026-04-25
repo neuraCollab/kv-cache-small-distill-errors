@@ -7,10 +7,8 @@ import logging
 import sys
 from pathlib import Path
 
-import numpy as np
-
 from kvtrace.analysis.report import build_report, write_heatmap
-from kvtrace.analysis.signatures import CATEGORY_ORDER, aggregate_counts, row_normalize
+from kvtrace.analysis.signatures import aggregate_counts, row_normalize
 
 log = logging.getLogger("analyze")
 

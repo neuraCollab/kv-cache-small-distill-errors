@@ -1,5 +1,4 @@
 import pytest
-from pydantic import ValidationError
 
 from kvtrace.judge.parsing import JudgeParseError, JudgmentResult, parse_judge_response
 

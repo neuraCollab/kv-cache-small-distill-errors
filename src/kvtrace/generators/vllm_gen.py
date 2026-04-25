@@ -95,7 +95,7 @@ class VLLMGenerator(Generator):
         outputs = self._llm.generate(prompts, sp, use_tqdm=True)
 
         results: list[GenerationResult] = []
-        for problem, req in zip(problems, outputs):
+        for problem, req in zip(problems, outputs, strict=False):
             completion = req.outputs[0]
             parsed = parse_trace(completion.text, finish_reason=completion.finish_reason)
             results.append(

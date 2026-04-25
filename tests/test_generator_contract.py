@@ -1,6 +1,6 @@
 import pytest
 
-from kvtrace.generators.base import Generator, GenerationResult
+from kvtrace.generators.base import GenerationResult, Generator
 
 
 def test_generation_result_required_fields():

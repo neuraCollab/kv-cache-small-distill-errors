@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from kvtrace.memory import free_gpu, _destroy_vllm_parallel_state
+from kvtrace.memory import _destroy_vllm_parallel_state, free_gpu
 
 
 def test_free_gpu_calls_torch_and_gc(monkeypatch):
@@ -15,6 +15,7 @@ def test_free_gpu_calls_torch_and_gc(monkeypatch):
 
     with patch.dict("sys.modules", {"torch": fake_torch, "gc": fake_gc}):
         import importlib
+
         import kvtrace.memory as m
         importlib.reload(m)
         m.free_gpu()

@@ -54,13 +54,13 @@ def build_report(
     lines.append("## Raw counts (rows = quant method, cols = category A..F)\n")
     lines.append("| method | " + " | ".join(CATEGORY_ORDER) + " | total |")
     lines.append("|---|" + "|".join(["---"] * 6) + "|---|")
-    for m, row in zip(methods, counts.astype(int)):
+    for m, row in zip(methods, counts.astype(int), strict=False):
         lines.append(f"| {m} | " + " | ".join(str(x) for x in row) + f" | {int(row.sum())} |")
 
     lines.append("\n## Normalized failure signatures (rows sum to 1)\n")
     lines.append("| method | " + " | ".join(CATEGORY_ORDER) + " |")
     lines.append("|---|" + "|".join(["---"] * 6) + "|")
-    for m, row in zip(methods, signatures):
+    for m, row in zip(methods, signatures, strict=False):
         lines.append(f"| {m} | " + " | ".join(f"{x:.2f}" for x in row) + " |")
 
     md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

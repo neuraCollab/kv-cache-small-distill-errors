@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 # --- Regexes ----------------------------------------------------------------
 
@@ -54,7 +53,7 @@ def _find_matching_brace(text: str, open_idx: int) -> int:
     return -1
 
 
-def extract_boxed_answer(text: str) -> Optional[str]:
+def extract_boxed_answer(text: str) -> str | None:
     """Return the content of the *last* \\boxed{...} in text, or None.
 
     Uses a brace-matching scan rather than a flat regex so it correctly
@@ -83,7 +82,7 @@ def extract_boxed_answer(text: str) -> Optional[str]:
     return results[-1]
 
 
-def extract_think_block(text: str) -> Tuple[Optional[str], str, bool]:
+def extract_think_block(text: str) -> tuple[str | None, str, bool]:
     """Split text into (think_content, remaining_text, think_was_closed).
 
     Strategy:
@@ -124,11 +123,11 @@ def extract_think_block(text: str) -> Tuple[Optional[str], str, bool]:
 @dataclass
 class ParsedTrace:
     raw: str
-    think: Optional[str]
+    think: str | None
     final_response: str
-    boxed_answer: Optional[str]
+    boxed_answer: str | None
     think_complete: bool
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -141,7 +140,7 @@ class ParsedTrace:
         }
 
 
-def parse_trace(text: str, finish_reason: Optional[str] = None) -> ParsedTrace:
+def parse_trace(text: str, finish_reason: str | None = None) -> ParsedTrace:
     """Parse a raw DeepSeek-R1 generation into its structured components."""
     think, remaining, closed = extract_think_block(text)
     # Prefer a boxed answer found in the post-think region; fall back to

@@ -6,7 +6,7 @@ from typing import Any
 
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
-    from transformers.cache_utils import QuantizedCacheConfig     # type: ignore
+    from transformers.cache_utils import QuantizedCacheConfig  # type: ignore
 except Exception:
     AutoModelForCausalLM = None   # type: ignore[assignment]
     AutoTokenizer = None          # type: ignore[assignment]
@@ -59,13 +59,16 @@ class HFGenerator(Generator):
         )
 
     def generate(self, problems: list[MathProblem]) -> list[GenerationResult]:
-        assert self._model is not None and self._tokenizer is not None, "call load() first"
+        assert (
+            self._model is not None
+            and self._tokenizer is not None
+            and self._model_cfg is not None
+        ), "call load() first"
 
         results: list[GenerationResult] = []
         cache_config = QuantizedCacheConfig(backend="HQQ", nbits=self._hqq_nbits)
 
         for p in problems:
-            prompt = self._build_prompt(p)
             # HF expects tensors; use return_tensors="pt"
             enc = self._tokenizer.apply_chat_template(
                 [{"role": "user", "content": f"{p.problem}\n\n{DEFAULT_USER_INSTRUCTION}"}],

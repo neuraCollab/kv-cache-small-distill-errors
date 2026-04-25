@@ -14,7 +14,7 @@ is dataset-agnostic downstream.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any
 
 from datasets import load_dataset
 
@@ -65,10 +65,10 @@ DATASET_CONFIGS: dict[str, dict[str, Any]] = {
 
 def load_math_dataset(
     name: str = "aime-24",
-    num_samples: Optional[int] = None,
+    num_samples: int | None = None,
     seed: int = 42,
     shuffle: bool = False,
-) -> List[MathProblem]:
+) -> list[MathProblem]:
     """Load a math dataset and normalize it into MathProblem records.
 
     Args:
@@ -101,7 +101,7 @@ def load_math_dataset(
     problem_key = cfg["problem_key"]
     answer_key = cfg["answer_key"]
 
-    problems: List[MathProblem] = []
+    problems: list[MathProblem] = []
     for i, row in enumerate(ds):
         problem_text = row[problem_key]
         # Some datasets store answers as ints; coerce to str for a uniform schema.

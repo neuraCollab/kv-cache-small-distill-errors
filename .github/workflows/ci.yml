@@ -26,6 +26,8 @@ jobs:
           pip install transformers==4.45.0 tokenizers datasets huggingface_hub
           pip install pydantic pyyaml scipy numpy matplotlib tqdm tenacity
           pip install anthropic==0.40.0
+          # mypy stub packages (no runtime impact)
+          pip install types-PyYAML
           pip install -e . --no-deps
       - name: Lint
         run: ruff check .

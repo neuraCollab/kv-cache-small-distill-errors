@@ -1,6 +1,6 @@
 import pytest
 
-from kvtrace.judge.taxonomy import CATEGORIES, TAXONOMY_VERSION, Category, lookup
+from kvtrace.judge.taxonomy import CATEGORIES, TAXONOMY_VERSION, lookup
 
 
 def test_six_categories_exactly():

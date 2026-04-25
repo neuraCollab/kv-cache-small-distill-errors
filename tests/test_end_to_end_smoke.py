@@ -6,9 +6,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 from kvtrace.dataset_loader import MathProblem
 from kvtrace.fdp.finder import find_fdp
@@ -50,7 +47,7 @@ def test_smoke_pipeline_without_network(tmp_path: Path):
 
     # Phase 2: run FDP
     fdp_records = []
-    for base, quant, prob in zip(baseline_rows, quant_rows, problems):
+    for base, quant, prob in zip(baseline_rows, quant_rows, problems, strict=False):
         r = find_fdp(
             baseline_tokens=base.token_ids,
             quant_tokens=quant.token_ids,

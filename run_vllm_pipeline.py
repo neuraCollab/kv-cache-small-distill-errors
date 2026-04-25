@@ -43,11 +43,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from pathlib import Path
-from typing import List
 
 # Defer heavy imports until after arg parsing so --help is fast.
 
@@ -84,14 +82,14 @@ def resolve_kv_cache_dtype(cli_arg: str) -> str:
     return cli_arg
 
 
-def build_prompts(tokenizer, problems) -> List[str]:
+def build_prompts(tokenizer, problems) -> list[str]:
     """Format each problem through the model's chat template.
 
     DeepSeek-R1 distills rely on apply_chat_template + add_generation_prompt
     to pre-seed the assistant turn with ``<think>\\n``, so the model starts
     reasoning immediately.
     """
-    prompts: List[str] = []
+    prompts: list[str] = []
     for p in problems:
         messages = [
             {"role": "user", "content": f"{p.problem}\n\n{DEFAULT_USER_INSTRUCTION}"},
@@ -171,8 +169,8 @@ def main() -> int:
 
     # Heavy imports
     import torch
-    from vllm import LLM, SamplingParams
     from transformers import AutoTokenizer
+    from vllm import LLM, SamplingParams
 
     from dataset_loader import load_math_dataset
     from trace_utils import parse_trace
@@ -182,7 +180,6 @@ def main() -> int:
         dev_name = torch.cuda.get_device_name(0)
         cc = torch.cuda.get_device_capability(0)
         print(f"[hw ] GPU: {dev_name}  compute capability {cc[0]}.{cc[1]}")
-        is_ampere = cc == (8, 6) or cc == (8, 0) or cc == (8, 9)  # rough "Ampere-ish"
         if cc == (8, 6) and kv_cache_dtype in ("fp8", "fp8_e4m3"):
             print(
                 "[hw ] WARNING: You selected an E4M3-flavor FP8 KV cache on an "
@@ -288,7 +285,7 @@ def main() -> int:
     # --- Write JSONL ------------------------------------------------------
     n_written = 0
     with out.open("w") as fout:
-        for problem, prompt, result in zip(problems, prompts, outputs):
+        for problem, prompt, result in zip(problems, prompts, outputs, strict=False):
             n_prompt_tokens = len(result.prompt_token_ids)
             for sample_i, completion in enumerate(result.outputs):
                 raw = completion.text

@@ -1,9 +1,7 @@
-from unittest.mock import patch
 
 import pytest
 
 from kvtrace.dataset_loader import (
-    DATASET_CONFIGS,
     MathProblem,
     load_math_dataset,
     load_study_mix,

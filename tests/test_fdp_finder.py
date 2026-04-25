@@ -1,8 +1,6 @@
-from unittest.mock import MagicMock
 
-import pytest
 
-from kvtrace.fdp.finder import FDPRecord, find_fdp, FDPParams
+from kvtrace.fdp.finder import FDPParams, find_fdp
 
 
 class FakeTokenizer:

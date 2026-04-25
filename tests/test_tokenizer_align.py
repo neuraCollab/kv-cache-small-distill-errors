@@ -1,4 +1,4 @@
-from kvtrace.fdp.tokenizer_align import first_token_mismatch, decode_window
+from kvtrace.fdp.tokenizer_align import decode_window, first_token_mismatch
 
 
 def test_first_token_mismatch_same_lists():

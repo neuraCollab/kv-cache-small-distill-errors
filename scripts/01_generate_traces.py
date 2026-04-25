@@ -95,7 +95,7 @@ def main() -> int:
         gen.unload()
 
     with out_file.open("w", encoding="utf-8") as f:
-        for p, r in zip(problems, results):
+        for p, r in zip(problems, results, strict=False):
             row = r.to_dict()
             row.update({
                 "problem": p.problem,

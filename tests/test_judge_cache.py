@@ -1,6 +1,5 @@
-import json
 
-from kvtrace.judge.claude_judge import _prompt_cache_key, JudgeCache
+from kvtrace.judge.claude_judge import JudgeCache, _prompt_cache_key
 
 
 def test_prompt_cache_key_stable():

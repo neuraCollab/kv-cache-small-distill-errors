@@ -1,7 +1,4 @@
-from pathlib import Path
 from unittest.mock import MagicMock
-
-import pytest
 
 from kvtrace.hf_hub.download import download_dataset_file
 from kvtrace.hf_hub.upload import resolve_repo_id, upload_dataset_file

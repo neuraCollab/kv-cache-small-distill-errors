@@ -49,7 +49,7 @@ class Generator(ABC):
     """
 
     @abstractmethod
-    def load(self, model_id: str, quant_config: Any) -> None: ...
+    def load(self, model_cfg: Any, quant_cfg: Any) -> None: ...
 
     @abstractmethod
     def generate(self, problems: list[MathProblem]) -> list[GenerationResult]: ...
@@ -57,7 +57,7 @@ class Generator(ABC):
     @abstractmethod
     def unload(self) -> None: ...
 
-    def __enter__(self) -> "Generator":
+    def __enter__(self) -> Generator:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from kvtrace.config import load_all_configs, ModelCfg, QuantCfg, PipelineCfg
+from kvtrace.config import ModelCfg, PipelineCfg, QuantCfg, load_all_configs
 
 CONFIG_DIR = Path(__file__).parent.parent / "config"
 
