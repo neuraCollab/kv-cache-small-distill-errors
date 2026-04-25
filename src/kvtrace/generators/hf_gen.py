@@ -6,10 +6,17 @@ from typing import Any
 
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
-    from transformers.cache_utils import QuantizedCacheConfig  # type: ignore
 except Exception:
     AutoModelForCausalLM = None   # type: ignore[assignment]
     AutoTokenizer = None          # type: ignore[assignment]
+
+# QuantizedCacheConfig is only present in newer transformers (≥4.43); keep the
+# import isolated so a missing symbol on older installs doesn't also null
+# AutoModelForCausalLM / AutoTokenizer above. Tests that exercise generate()
+# patch this symbol explicitly.
+try:
+    from transformers.cache_utils import QuantizedCacheConfig  # type: ignore
+except Exception:
     QuantizedCacheConfig = None   # type: ignore[assignment]
 
 # torch is optional at import time so CI (CPU-only, no torch) can still import
