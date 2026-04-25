@@ -1,236 +1,183 @@
-# DeepSeek-R1 KV Cache Quantization — Trace-Level Diagnostic Study
+# KV Cache Quantization — Trace-Level Diagnostic Study
 
-A minimal, reproducible pipeline for generating and comparing reasoning
-traces from the **DeepSeek-R1-Distill-Qwen** models with and without KV
-cache quantization, using **vLLM offline batched inference** on a single
-**NVIDIA RTX 3090 (24 GB, Ampere)**.
+Reproducible pipeline for diagnosing **how** KV cache quantization methods
+break reasoning in compact (1.5B–7B) reasoning models, not just how much
+they degrade accuracy. Output is a markdown + JSON report with failure
+**signatures** for 5 quantization configurations across 3 models.
 
-The pipeline runs the same AIME-24 / MATH-500 problems through two
-configurations — a BF16 baseline KV cache and an FP8 KV cache — and stores
-the complete `<think>...</think>` trace, final response, boxed answer, and
-full raw output side-by-side as JSONL, ready for counterfactual analysis.
+## Design documents
 
----
+- Design spec: [docs/superpowers/specs/2026-04-25-kv-trace-study-design.md](docs/superpowers/specs/2026-04-25-kv-trace-study-design.md)
+- Implementation plan: [docs/superpowers/plans/2026-04-25-kv-trace-study.md](docs/superpowers/plans/2026-04-25-kv-trace-study.md)
 
-## Hardware note: FP8 on Ampere
+## What it does
 
-The RTX 3090 is Ampere (compute capability 8.6). **Ampere has no native FP8
-tensor cores** — those only arrive in Hopper (H100) and Ada Lovelace (L40S,
-RTX 4090/5090). What vLLM does on Ampere is *storage-only* quantization:
-the KV cache is stored in FP8 but dequantized to BF16/FP16 at
-attention-compute time. This still roughly halves KV cache memory, and it
-induces exactly the kind of numerical drift a trace-level diagnostic study
-is designed to measure.
+Four idempotent phases:
 
-### `--kv_dtype` choices
+1. **GENERATE** — run each of 3 models × 5 KV-cache configurations × 80
+   math problems (30 AIME-24 + 50 MATH-500) through its own generator
+   (vLLM for BF16 / FP8 E5M2 / FP8 E4M3, HuggingFace Transformers + HQQ
+   for INT4 / INT2).
+2. **FIND FDP** — for each quantized trace, locate the First Divergence
+   Point from the BF16 baseline using token-level exact matching plus a
+   MiniLM semantic re-sync filter to skip cosmetic divergences.
+3. **JUDGE** — ask Claude Sonnet 4.6 (with Anthropic prompt caching and a
+   local SHA256 prompt cache) to classify each FDP into one of six error
+   categories: A-Arithmetic, B-Logical, C-Strategy-switch,
+   D-Hallucination, E-Premature-termination, F-Repetition/loop.
+4. **ANALYZE** — build a confusion matrix (method × category), run a
+   chi-square independence test and Cramér's V, and emit a deterministic
+   markdown + JSON report plus heatmap plots.
 
-| CLI value | vLLM `kv_cache_dtype` | RTX 3090 status |
-|---|---|---|
-| `auto` | `auto` | **Baseline.** Matches model dtype (BF16/FP16). |
-| `fp8_e5m2` | `fp8_e5m2` | **Recommended quantized config.** Wider dynamic range; the well-trodden Ampere path. |
-| `fp8_e4m3` | `fp8_e4m3` | Works, but E4M3 is tuned for Hopper. Numerically less well-behaved on Ampere. |
-| `fp8` | `fp8` | Alias for `fp8_e4m3` in current vLLM. |
-| `int8` | *(not a valid vLLM value)* | Exposed for discoverability. The script raises a clear error pointing to `fp8_e5m2`. See note below. |
+Each phase is resumable from HuggingFace Hub snapshots, so a Vast.ai
+instance death in the middle of the run is cheap to recover from.
 
-vLLM's `--kv-cache-dtype` runtime flag only accepts
-`auto | fp8 | fp8_e5m2 | fp8_e4m3`. "INT8 KV cache" in vLLM proper means a
-model-specific quantization recipe that goes through the model quantization
-path, not this runtime flag — which is why the script surfaces a
-descriptive error instead of silently falling back.
+## Hardware
 
----
+- **Single RTX 4090 (24 GB, Ada, CC 8.9)** on Vast.ai (~$0.40/hour).
+  Ada is chosen over Ampere because it has native FP8 tensor cores,
+  making `fp8_e5m2` and `fp8_e4m3` qualitatively distinct — this is
+  essential for the "different methods break differently" thesis.
+- ~14 GPU-hours total for the full 3-model × 5-config × 80-problem run.
 
-## Vast.ai setup
+## Budget
 
-### Recommended Docker image
+| Line item | Cost |
+|---|---|
+| Compute (Vast.ai, ~14 GPU-hours) | ~$5.60 |
+| Claude Sonnet 4.6 judge (prompt cached) | ~$3.00 |
+| HuggingFace Hub (public dataset) | $0 |
+| Contingency | ~$3.00 |
+| **Total** | **~$12** |
 
-Either of these work on a CUDA 12.1+ host:
-
-```text
-# Option A: official vLLM image (everything pre-baked)
-vllm/vllm-openai:v0.6.6
-
-# Option B: PyTorch CUDA base, install vLLM from requirements.txt
-pytorch/pytorch:2.4.0-cuda12.1-cudnn9-devel
-```
-
-When renting on Vast.ai:
-
-- **GPU**: 1× RTX 3090 (24 GB)
-- **Disk**: ≥ 80 GB (for the 7B model + HF cache + JSONL outputs)
-- **CUDA**: 12.1 or 12.4 host driver
-- **Ports**: none required for this pipeline (offline inference only)
-
-### Clone + install
+## Install
 
 ```bash
-git clone <your-repo>
-cd deepseek-kv-trace-study
+git clone <this repo>
+cd kv-trace-study
 
 python -m venv .venv && source .venv/bin/activate
 pip install -U pip
 pip install -r requirements.txt
+pip install -e .
 ```
 
-If you want to pre-download the model weights (avoids mid-run surprise):
+Dev dependencies (tests, linters):
 
 ```bash
-huggingface-cli download deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
-    --local-dir ./models/DeepSeek-R1-Distill-Qwen-7B
+pip install -r requirements-dev.txt
 ```
 
----
+## Environment variables
 
-## Running the pipeline
+| Variable | Required | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | for Phase 3 | Claude Sonnet 4.6 judge |
+| `HF_REPO_ID` | optional | full HF dataset repo id (e.g. `me/my-kv-study`) |
+| `HF_USER` | optional | HF username; dataset is `{HF_USER}/kv-trace-study` |
+| `HF_TOKEN` | for HF upload | write access to the dataset repo |
 
-### Baseline (unquantized KV cache)
+If no HF variable is set the pipeline still runs locally — uploads are
+silently skipped.
+
+## Run the full study
 
 ```bash
-python run_vllm_pipeline.py \
-    --model_path deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
-    --dataset aime-24 \
-    --dataset_size 30 \
-    --kv_dtype auto \
-    --dtype bfloat16 \
-    --output_file outputs/traces_fp16.jsonl
+# Set at least ANTHROPIC_API_KEY; HF_USER is strongly recommended.
+export ANTHROPIC_API_KEY="sk-ant-..."
+export HF_USER="your-hf-username"
+export HF_TOKEN="hf_..."
+
+# Calibrate the judge FIRST (takes ~30s on live API).
+# Must pass ≥7/10 — if it fails, re-check the taxonomy prompt.
+pytest -m live_api tests/test_judge_calibration.py -v
+
+# Now the real thing.
+bash scripts/run_all.sh
+
+# Output:
+#   outputs/report.md
+#   outputs/report.json
+#   outputs/plots/*.png
+#   HF:  {HF_USER}/kv-trace-study with 15 trace + 12 FDP + 12 judgment revisions
 ```
 
-### Quantized (FP8 E5M2 — Ampere-friendly)
+For a faster iteration run that drops the most experimental config:
 
 ```bash
-python run_vllm_pipeline.py \
-    --model_path deepseek-ai/DeepSeek-R1-Distill-Qwen-7B \
-    --dataset aime-24 \
-    --dataset_size 30 \
-    --kv_dtype fp8_e5m2 \
-    --dtype bfloat16 \
-    --output_file outputs/traces_fp8e5m2.jsonl
+bash scripts/run_all.sh --light
 ```
 
-Both invocations are identical except for `--kv_dtype` and `--output_file`,
-which makes the two JSONL files directly comparable line-by-line.
-
-### Fast sanity run on the 1.5B distill
+## Run individual phases
 
 ```bash
-python run_vllm_pipeline.py \
-    --model_path deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B \
-    --dataset aime-24 \
-    --dataset_size 4 \
-    --kv_dtype auto \
-    --output_file outputs/smoke_test.jsonl
+# Phase 1 — one (model, config) at a time, resumable
+python scripts/01_generate_traces.py \
+    --model deepseek-r1-distill-qwen-1.5b \
+    --config fp8_e5m2 \
+    --resume
+
+# Phase 2 — needs baseline bf16 already generated
+python scripts/02_find_fdps.py --model deepseek-r1-distill-qwen-1.5b
+
+# Phase 3 — all FDPs at once; cached
+python scripts/03_judge_fdps.py
+
+# Phase 4 — CPU only, <1 min
+python scripts/04_analyze.py
 ```
 
----
+## Testing
 
-## Memory tuning for 7B on 24 GB
+```bash
+# CI default — no GPU, no live API, ≥85% coverage gate
+make test
 
-Rough memory budget at BF16, `gpu_memory_utilization=0.90`:
+# GPU-dependent tests (run on the rented 4090 before Phase 1)
+make test-gpu
 
-| Item | Memory |
+# Live-API calibration (run before Phase 3)
+make test-live
+```
+
+Three pytest markers:
+
+| Marker | When to run |
 |---|---|
-| 7B model weights (BF16) | ~14 GB |
-| vLLM framework overhead | ~1–2 GB |
-| Available for KV cache | ~6–7 GB |
-
-At 32k context a single 7B sequence's KV cache is roughly 1.5 GB in BF16
-and ~0.75 GB in FP8 — so FP8 is what makes long-context batched AIME runs
-practical on this hardware.
-
-If you OOM:
-
-1. Drop `--gpu_memory_utilization` to `0.85`.
-2. Cap context: `--max_model_len 16384` (or `8192` for sanity runs).
-3. Lower `--max_tokens` — but AIME traces really can exceed 10k tokens;
-   cutting too low corrupts the study.
-4. Switch to FP8 KV cache (`--kv_dtype fp8_e5m2`) — but that becomes your
-   quantized condition, not your baseline.
-5. Fall back to the 1.5B distill for iteration.
-
----
-
-## Output schema
-
-Each line of the output JSONL is one completion:
-
-```json
-{
-  "idx": 0,
-  "sample_idx": 0,
-  "source": "aime-24",
-  "problem": "Let ...",
-  "ground_truth": "204",
-  "prompt": "... formatted via chat template, ending in <think>\\n ...",
-  "raw_output": "<full generated text including </think> and answer>",
-  "think": "<content before </think>>",
-  "final_response": "<content after </think>>",
-  "boxed_answer": "204",
-  "think_complete": true,
-  "finish_reason": "stop",
-  "num_prompt_tokens": 87,
-  "num_generated_tokens": 7412,
-  "kv_dtype_cli": "fp8_e5m2",
-  "kv_cache_dtype_vllm": "fp8_e5m2",
-  "dtype": "bfloat16",
-  "model_path": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-  "seed": 42,
-  "temperature": 0.0,
-  "metadata": { "...": "passthrough from the source dataset" }
-}
-```
-
-Alongside the JSONL the script also writes `<output>.jsonl.meta.json`
-capturing the full run configuration (model, KV dtype, seed, GPU, compute
-capability, timestamp) so each run is self-describing.
-
-### Parser semantics for `<think>` blocks
-
-DeepSeek-R1 distills use `apply_chat_template(add_generation_prompt=True)`
-to **pre-seed the assistant turn with `<think>\n`** — so the generated
-text typically contains only the closing `</think>` tag. `trace_utils.py`
-handles all four cases:
-
-1. Both `<think>` and `</think>` present → standard block extraction.
-2. Only `</think>` present → everything before it is the trace
-   (the DeepSeek-R1 common case).
-3. Only `<think>` present → output was truncated mid-trace;
-   `think_complete=false`.
-4. Neither present → no trace; the full text is the response.
-
-`boxed_answer` uses a brace-matching scan (not a flat regex) so nested
-LaTeX like `\boxed{\dfrac{22}{7}}` parses correctly.
-
----
-
-## Reproducibility
-
-- Greedy decoding: `temperature=0.0`, `top_p=1.0`
-- `seed=42` is passed to both the vLLM engine and `SamplingParams`
-- Chat template is taken verbatim from the model's tokenizer config
-- `shuffle=False` by default — baseline and quantized runs see the exact
-  same prompts in the exact same order
-
-Note: bit-exact reproducibility across independent vLLM invocations is
-*not* guaranteed — paged attention and chunked prefill can introduce tiny
-floating-point non-determinism. In practice greedy + fixed seed gives very
-high run-to-run similarity, which is sufficient for a comparative study.
-DeepSeek-R1 itself recommends `temperature=0.6` for general use; using
-`0.0` is a deliberate trade of output "quality" for determinism so that
-any divergence between the baseline and quantized traces is attributable
-to the KV cache perturbation and nothing else.
-
----
+| (none) | always; CI default |
+| `@pytest.mark.gpu` | before renting GPU time |
+| `@pytest.mark.live_api` | before each Phase 3 run (catches Anthropic drift) |
 
 ## Repository layout
 
-```text
-.
-├── README.md
-├── requirements.txt
-├── dataset_loader.py        # AIME-24 / MATH-500 -> MathProblem records
-├── trace_utils.py           # <think> extraction + \boxed{} parser (+ self-tests)
-└── run_vllm_pipeline.py     # the main entry point
+```
+kv-trace-study/
+├── config/                   # 3 YAML files — models, quant methods, pipeline
+├── src/kvtrace/
+│   ├── generators/           # vLLM + HF (HQQ) backends behind one ABC
+│   ├── fdp/                  # hybrid token + semantic re-sync finder
+│   ├── judge/                # taxonomy, prompt, Claude client, golden set
+│   ├── hf_hub/               # idempotent upload / download
+│   └── analysis/             # signatures + markdown report
+├── scripts/                  # 01…04 phase CLIs + run_all.sh
+├── tests/                    # CPU, GPU, and live-API suites
+└── outputs/                  # runtime artifacts (gitignored)
 ```
 
-Run `python trace_utils.py` as a quick self-test of the parser without
-touching a GPU.
+## Reproducibility
+
+- Greedy decoding (`temperature=0.0`, `top_p=1.0`) + fixed `seed=42`.
+- Chat templates taken verbatim from each model's HF tokenizer.
+- `requirements.txt` pins `vllm==0.6.6`, `transformers==4.45.0`,
+  `anthropic==0.40.0`.
+- Prompt and taxonomy are versioned (`PROMPT_V1`, `TAXONOMY_V1`); a
+  change bumps the SHA256 cache key, so stale judgments never silently
+  reappear.
+- Each JSONL row is self-describing — model, config, seed, timestamp,
+  prompt version.
+
+## Citation
+
+The paper is not in this repository. The dataset and code here are the
+*reproducibility appendix*: cite them via the HuggingFace dataset id and
+the GitHub commit hash.
