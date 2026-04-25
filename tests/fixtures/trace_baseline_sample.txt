@@ -1,0 +1,7 @@
+Let me solve this step by step.
+First, I need to compute 2+3 = 5.
+Next, I multiply by 4: 5*4 = 20.
+So the answer is 20.
+</think>
+
+The answer is \boxed{20}.

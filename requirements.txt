@@ -1,28 +1,29 @@
-# ------------------------------------------------------------------
-# DeepSeek-R1 KV Cache Trace Study - dependencies
-# Target: CUDA 12.1+, RTX 3090 (Ampere, CC 8.6)
-# ------------------------------------------------------------------
-#
-# vLLM 0.6.x is the recommended line for this hardware:
-#   * stable fp8_e5m2 KV cache support on Ampere (storage-only quant)
-#   * ships pre-built CUDA 12.1 wheels
-#   * transitively pins a compatible torch build
-#
-# If you use a newer vLLM (0.7.x+), bump `torch` and `flash-attn` accordingly.
-# ------------------------------------------------------------------
-
-vllm>=0.6.3,<0.8
-transformers>=4.45.0
-datasets>=3.0.0
+# Core
+vllm==0.6.6
+transformers==4.45.0
+tokenizers>=0.20
 accelerate>=0.34.0
-
-# Utilities
-tqdm>=4.66.0
+datasets>=3.0.0
 huggingface_hub>=0.25.0
 
-# numpy<2.0 avoids binary-incompat issues with some ML wheels on 3090 images.
-# Relax this if your stack is fully numpy>=2 clean.
-numpy<2.0
+# KV quantization
+hqq>=0.2.2
 
-# torch is pulled transitively by vllm; do NOT pin it here unless you
-# know your wheel matches vllm's expected ABI.
+# Judge
+anthropic==0.40.0
+
+# FDP semantic re-sync
+sentence-transformers>=3.0.0
+
+# Config
+pydantic>=2.7
+pyyaml>=6.0
+
+# Analysis
+scipy>=1.11
+numpy<2.0
+matplotlib>=3.8
+
+# Utils
+tqdm>=4.66
+tenacity>=8.2
