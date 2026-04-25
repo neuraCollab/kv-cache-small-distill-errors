@@ -9,7 +9,9 @@ def test_system_block_contains_all_categories():
     sys_blocks = build_system_block()
     text = " ".join(b["text"] for b in sys_blocks)
     for letter in "ABCDEF":
-        assert f" {letter}." in text or f" {letter} " in text or f"{letter}:" in text
+        # Taxonomy lines start each category with `<letter>. <name> — ...`,
+        # so a `<letter>.` substring must appear somewhere in the static block.
+        assert f"{letter}." in text
 
 
 def test_system_block_has_cache_control():

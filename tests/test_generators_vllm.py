@@ -37,9 +37,10 @@ def test_vllm_generator_load_passes_kv_cache_dtype(mock_tok, mock_llm_cls):
     assert kwargs["seed"] == 42
 
 
+@patch("kvtrace.generators.vllm_gen.SamplingParams")
 @patch("kvtrace.generators.vllm_gen.LLM")
 @patch("kvtrace.generators.vllm_gen.AutoTokenizer")
-def test_vllm_generator_generate_returns_results(mock_tok, mock_llm_cls):
+def test_vllm_generator_generate_returns_results(mock_tok, mock_llm_cls, mock_sp):
     # Arrange
     tokenizer = MagicMock()
     tokenizer.apply_chat_template.return_value = "PROMPT"

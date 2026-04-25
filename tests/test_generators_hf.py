@@ -23,9 +23,10 @@ def test_hf_generator_load_rejects_vllm_engine(mock_tok, mock_model):
         HFGenerator().load(ModelCfg(hf_id="foo"), QuantCfg(engine="vllm", kv_cache_dtype="auto"))
 
 
+@patch("kvtrace.generators.hf_gen.QuantizedCacheConfig")
 @patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
 @patch("kvtrace.generators.hf_gen.AutoTokenizer")
-def test_hf_generator_generate_returns_result(mock_tok, mock_model):
+def test_hf_generator_generate_returns_result(mock_tok, mock_model, mock_qcc):
     tokenizer = MagicMock()
     tokenizer.apply_chat_template.return_value = {"input_ids": MagicMock()}
     tokenizer.decode.return_value = "Reasoning done.</think>\n\n\\boxed{7}"
@@ -35,7 +36,11 @@ def test_hf_generator_generate_returns_result(mock_tok, mock_model):
     fake_out = MagicMock()
     fake_out.sequences = MagicMock()
     fake_out.sequences.shape = (1, 10)
-    fake_out.sequences.__getitem__ = lambda self, idx: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    # `out.sequences[0].tolist()` is what the generator calls; mock returns a
+    # tensor-like with .tolist() yielding the desired token ids.
+    seq_tensor = MagicMock()
+    seq_tensor.tolist.return_value = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    fake_out.sequences.__getitem__ = lambda self, idx: seq_tensor
     model.generate.return_value = fake_out
     model.device = "cpu"
     mock_model.from_pretrained.return_value = model
