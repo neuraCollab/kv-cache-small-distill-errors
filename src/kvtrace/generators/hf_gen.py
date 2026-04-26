@@ -70,10 +70,18 @@ class HFGenerator(Generator):
         else:
             # CI (mocked AutoModelForCausalLM) doesn't need a real torch dtype.
             torch_dtype = None
+        # Force single-GPU placement. `device_map="auto"` lets accelerate
+        # offload buffers to CPU when it thinks memory is tight, which
+        # silently breaks HQQ's quantized KV cache (it does in-place dequant
+        # against `meta["zero"] / meta["scale"]` and can't follow tensors
+        # across devices). On the target GPUs (≥24 GB) the 1.5B/1.7B/7B
+        # models all fit comfortably on cuda:0, so single-device placement
+        # is correct and avoids the cuda:0/cpu mismatch crash.
+        device_map: Any = {"": 0} if torch is not None else "auto"
         self._model = AutoModelForCausalLM.from_pretrained(
             model_cfg.hf_id,
             torch_dtype=torch_dtype,
-            device_map="auto",
+            device_map=device_map,
             trust_remote_code=model_cfg.trust_remote_code,
         )
 
@@ -85,7 +93,23 @@ class HFGenerator(Generator):
         ), "call load() first"
 
         results: list[GenerationResult] = []
-        cache_config = QuantizedCacheConfig(backend="HQQ", nbits=self._hqq_nbits)
+        # `QuantizedCacheConfig.device` defaults to "cpu" in transformers 4.45.
+        # If we leave it default, HQQ allocates the quantized KV buffers on
+        # CPU while the model runs on GPU and dequant fails with
+        # "found at least two devices, cuda:0 and cpu!". Pin the cache to
+        # the model's actual device.
+        if torch is not None and torch.cuda.is_available():
+            cache_device = "cuda"
+            compute_dtype = torch.bfloat16
+        else:
+            cache_device = "cpu"
+            compute_dtype = None
+        cache_config = QuantizedCacheConfig(
+            backend="HQQ",
+            nbits=self._hqq_nbits,
+            device=cache_device,
+            compute_dtype=compute_dtype,
+        )
 
         for p in problems:
             # HF expects tensors; use return_tensors="pt"
