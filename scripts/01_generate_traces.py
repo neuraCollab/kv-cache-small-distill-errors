@@ -43,6 +43,7 @@ def make_generator(engine: str, pipeline) -> Generator:
             sampling_top_p=pipeline.sampling.top_p,
             sampling_max_tokens=pipeline.sampling.max_tokens,
             sampling_repetition_penalty=pipeline.sampling.repetition_penalty,
+            batch_size=pipeline.sampling.hf_batch_size,
         )
     raise ValueError(f"unknown engine {engine!r}")
 
