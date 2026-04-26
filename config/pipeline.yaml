@@ -13,6 +13,12 @@ pipeline:
     # >1.0 breaks degenerate repetition loops in R1-Distill at T=0; keep
     # constant across all quant methods so divergence comparisons stay valid.
     repetition_penalty: 1.05
+    # HF Transformers backend has no continuous batching, so the only way to
+    # raise GPU utilization on the HQQ KV-cache path is sized batches per
+    # `model.generate()` call. 4 fits comfortably for 1.5B/1.7B/7B at 16K
+    # context on a 24-48 GB GPU. vLLM ignores this — its scheduler batches
+    # internally.
+    hf_batch_size: 4
   fdp:
     context_window: 200
     resync_lookahead: 500

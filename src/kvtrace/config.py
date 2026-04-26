@@ -45,6 +45,12 @@ class SamplingCfg(BaseModel):
     # deterministic — preserves the divergence-study property that two runs of
     # the same (model, quant) pair produce identical token streams.
     repetition_penalty: float = 1.0
+    # HF Transformers backend (HQQ configs) processes prompts in batches of
+    # this size per `model.generate()` call. vLLM ignores this — it has its
+    # own continuous batching. Higher values raise GPU utilization on the
+    # otherwise sequential HQQ path; 4 is comfortable for 1.5B/1.7B/7B at
+    # 16K context on a 24-48 GB GPU.
+    hf_batch_size: int = 1
 
 
 class FDPCfg(BaseModel):

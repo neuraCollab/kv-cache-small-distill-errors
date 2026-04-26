@@ -59,3 +59,11 @@ def test_pipeline_cfg_sampling_has_repetition_penalty():
     assert p.sampling.repetition_penalty > 1.0
     # Sanity bound: anything ≥1.2 starts visibly degrading reasoning quality.
     assert p.sampling.repetition_penalty < 1.2
+
+
+def test_pipeline_cfg_sampling_has_hf_batch_size():
+    """HF Transformers backend needs >1 batch size to reach decent GPU util."""
+    _, _, p = load_all_configs(CONFIG_DIR)
+    assert p.sampling.hf_batch_size >= 1
+    # Sanity bound: very high batch size will OOM on 24-48 GB GPUs at 16K ctx.
+    assert p.sampling.hf_batch_size <= 16
