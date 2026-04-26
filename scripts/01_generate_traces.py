@@ -111,7 +111,14 @@ def main() -> int:
     log.info("wrote %d records to %s", len(results), out_file)
 
     if resolve_repo_id():
-        upload_dataset_file(out_file, revision_tag=revision_tag)
+        # `upload_dataset_file` is already best-effort (never raises), but
+        # belt-and-suspenders here means an unexpected programmer error in
+        # the upload path can never throw away the trace file we just
+        # generated — re-running with `--resume` will pick up from here.
+        try:
+            upload_dataset_file(out_file, revision_tag=revision_tag)
+        except Exception:
+            log.exception("upload step failed; trace file %s is preserved locally", out_file)
     return 0
 
 
