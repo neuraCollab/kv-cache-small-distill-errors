@@ -1,7 +1,19 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
-import torch
+
+# torch is optional in CI (CPU-only test runners ship without it). Tests that
+# build real tensors are skipped collectively when it's missing; mock-only
+# tests below still run so we keep coverage of the load/unload/validation
+# paths in lightweight CI.
+try:
+    import torch  # type: ignore
+    _HAS_TORCH = True
+except Exception:
+    torch = None  # type: ignore[assignment]
+    _HAS_TORCH = False
+
+needs_torch = pytest.mark.skipif(not _HAS_TORCH, reason="requires torch")
 
 from kvtrace.config import ModelCfg, QuantCfg
 from kvtrace.dataset_loader import MathProblem
@@ -54,6 +66,7 @@ def test_hf_generator_load_sets_left_padding(mock_tok, mock_model):
     assert tokenizer.pad_token == "<|eot|>"
 
 
+@needs_torch
 @patch("kvtrace.generators.hf_gen.QuantizedCacheConfig")
 @patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
 @patch("kvtrace.generators.hf_gen.AutoTokenizer")
@@ -106,6 +119,7 @@ def test_hf_generator_load_pins_to_single_gpu(mock_tok, mock_model):
     assert kwargs["device_map"] in ({"": 0}, "auto")
 
 
+@needs_torch
 @patch("kvtrace.generators.hf_gen.QuantizedCacheConfig")
 @patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
 @patch("kvtrace.generators.hf_gen.AutoTokenizer")
@@ -140,6 +154,7 @@ def test_hf_generator_passes_attention_mask_and_pad_token(mock_tok, mock_model, 
     assert kwargs["pad_token_id"] == 42
 
 
+@needs_torch
 @patch("kvtrace.generators.hf_gen.QuantizedCacheConfig")
 @patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
 @patch("kvtrace.generators.hf_gen.AutoTokenizer")
@@ -202,6 +217,7 @@ def test_hf_generator_batches_multiple_problems(mock_tok, mock_model, mock_qcc):
     assert results[1].token_ids == [81, 82, 83, 84]
 
 
+@needs_torch
 @patch("kvtrace.generators.hf_gen.QuantizedCacheConfig")
 @patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
 @patch("kvtrace.generators.hf_gen.AutoTokenizer")
