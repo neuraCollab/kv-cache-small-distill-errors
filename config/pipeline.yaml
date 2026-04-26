@@ -6,7 +6,13 @@ pipeline:
   sampling:
     temperature: 0.0
     top_p: 1.0
-    max_tokens: 32768
+    # 16K is sufficient for AIME / MATH-500 traces (rare to exceed 12K) and
+    # caps the blast radius of any repetition loop that slips past the
+    # repetition_penalty guard.
+    max_tokens: 16384
+    # >1.0 breaks degenerate repetition loops in R1-Distill at T=0; keep
+    # constant across all quant methods so divergence comparisons stay valid.
+    repetition_penalty: 1.05
   fdp:
     context_window: 200
     resync_lookahead: 500

@@ -39,6 +39,12 @@ class SamplingCfg(BaseModel):
     temperature: float = 0.0
     top_p: float = 1.0
     max_tokens: int = 32768
+    # Per DeepSeek R1-Distill guidance: greedy decoding (T=0) frequently
+    # triggers degenerate repetition loops on hard reasoning problems. A small
+    # repetition_penalty (>1.0, e.g. 1.05) breaks loops while remaining
+    # deterministic — preserves the divergence-study property that two runs of
+    # the same (model, quant) pair produce identical token streams.
+    repetition_penalty: float = 1.0
 
 
 class FDPCfg(BaseModel):

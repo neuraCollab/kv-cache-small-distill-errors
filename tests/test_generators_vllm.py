@@ -40,6 +40,34 @@ def test_vllm_generator_load_passes_kv_cache_dtype(mock_tok, mock_llm_cls):
 @patch("kvtrace.generators.vllm_gen.SamplingParams")
 @patch("kvtrace.generators.vllm_gen.LLM")
 @patch("kvtrace.generators.vllm_gen.AutoTokenizer")
+def test_vllm_generator_passes_repetition_penalty(mock_tok, mock_llm_cls, mock_sp):
+    """repetition_penalty must reach SamplingParams or R1-Distill loops at T=0."""
+    tokenizer = MagicMock()
+    tokenizer.apply_chat_template.return_value = "PROMPT"
+    mock_tok.from_pretrained.return_value = tokenizer
+
+    completion = MagicMock()
+    completion.text = "x"
+    completion.token_ids = [1]
+    completion.finish_reason = "stop"
+    req_out = MagicMock()
+    req_out.prompt_token_ids = [1]
+    req_out.outputs = [completion]
+    llm = MagicMock()
+    llm.generate.return_value = [req_out]
+    mock_llm_cls.return_value = llm
+
+    gen = VLLMGenerator(seed=42, sampling_repetition_penalty=1.05)
+    gen.load(ModelCfg(hf_id="m"), QuantCfg(engine="vllm", kv_cache_dtype="auto"))
+    gen.generate([MathProblem(idx=0, problem="q", answer="x", source="aime-24")])
+
+    _, kwargs = mock_sp.call_args
+    assert kwargs["repetition_penalty"] == 1.05
+
+
+@patch("kvtrace.generators.vllm_gen.SamplingParams")
+@patch("kvtrace.generators.vllm_gen.LLM")
+@patch("kvtrace.generators.vllm_gen.AutoTokenizer")
 def test_vllm_generator_generate_returns_results(mock_tok, mock_llm_cls, mock_sp):
     # Arrange
     tokenizer = MagicMock()
