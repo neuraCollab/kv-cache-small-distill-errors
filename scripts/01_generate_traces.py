@@ -35,12 +35,14 @@ def make_generator(engine: str, pipeline) -> Generator:
             sampling_temperature=pipeline.sampling.temperature,
             sampling_top_p=pipeline.sampling.top_p,
             sampling_max_tokens=pipeline.sampling.max_tokens,
+            sampling_repetition_penalty=pipeline.sampling.repetition_penalty,
         )
     if engine == "hf":
         return HFGenerator(
             sampling_temperature=pipeline.sampling.temperature,
             sampling_top_p=pipeline.sampling.top_p,
             sampling_max_tokens=pipeline.sampling.max_tokens,
+            sampling_repetition_penalty=pipeline.sampling.repetition_penalty,
         )
     raise ValueError(f"unknown engine {engine!r}")
 

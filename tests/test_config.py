@@ -51,3 +51,11 @@ def test_pipeline_cfg_fdp_params():
     assert p.fdp.context_window == 200
     assert 0.0 < p.fdp.cosmetic_cosine_threshold <= 1.0
     assert p.fdp.max_cosmetic_skips >= 0
+
+
+def test_pipeline_cfg_sampling_has_repetition_penalty():
+    """R1-Distill at T=0 needs repetition_penalty>1 to break repetition loops."""
+    _, _, p = load_all_configs(CONFIG_DIR)
+    assert p.sampling.repetition_penalty > 1.0
+    # Sanity bound: anything ≥1.2 starts visibly degrading reasoning quality.
+    assert p.sampling.repetition_penalty < 1.2

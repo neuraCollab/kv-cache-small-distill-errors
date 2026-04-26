@@ -42,10 +42,12 @@ class HFGenerator(Generator):
         sampling_temperature: float = 0.0,
         sampling_top_p: float = 1.0,
         sampling_max_tokens: int = 32768,
+        sampling_repetition_penalty: float = 1.0,
     ) -> None:
         self.sampling_temperature = sampling_temperature
         self.sampling_top_p = sampling_top_p
         self.sampling_max_tokens = sampling_max_tokens
+        self.sampling_repetition_penalty = sampling_repetition_penalty
         self._model: Any = None
         self._tokenizer: Any = None
         self._model_cfg: ModelCfg | None = None
@@ -103,6 +105,7 @@ class HFGenerator(Generator):
                 do_sample=(self.sampling_temperature > 0.0),
                 temperature=self.sampling_temperature or None,
                 top_p=self.sampling_top_p,
+                repetition_penalty=self.sampling_repetition_penalty,
                 cache_implementation="quantized",
                 cache_config=cache_config,
                 return_dict_in_generate=True,

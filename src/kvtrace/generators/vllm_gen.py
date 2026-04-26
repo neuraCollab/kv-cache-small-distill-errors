@@ -52,12 +52,14 @@ class VLLMGenerator(Generator):
         sampling_temperature: float = 0.0,
         sampling_top_p: float = 1.0,
         sampling_max_tokens: int = 32768,
+        sampling_repetition_penalty: float = 1.0,
         gpu_memory_utilization: float = 0.90,
     ) -> None:
         self.seed = seed
         self.sampling_temperature = sampling_temperature
         self.sampling_top_p = sampling_top_p
         self.sampling_max_tokens = sampling_max_tokens
+        self.sampling_repetition_penalty = sampling_repetition_penalty
         self.gpu_memory_utilization = gpu_memory_utilization
         self._llm: Any = None
         self._tokenizer: Any = None
@@ -90,6 +92,7 @@ class VLLMGenerator(Generator):
             temperature=self.sampling_temperature,
             top_p=self.sampling_top_p,
             max_tokens=self.sampling_max_tokens,
+            repetition_penalty=self.sampling_repetition_penalty,
             seed=self.seed,
         )
         outputs = self._llm.generate(prompts, sp, use_tqdm=True)
