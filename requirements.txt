@@ -1,6 +1,6 @@
 # Core
 vllm==0.6.6
-transformers==4.45.0
+transformers==4.45.2
 tokenizers>=0.20
 accelerate>=0.34.0
 datasets>=3.0.0
