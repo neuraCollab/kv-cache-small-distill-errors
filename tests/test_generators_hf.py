@@ -76,3 +76,36 @@ def test_hf_generator_load_pins_to_single_gpu(mock_tok, mock_model):
     # acceptable; what matters is that we're not silently sharding the
     # production case. On any host with torch importable we expect single-GPU.
     assert kwargs["device_map"] in ({"": 0}, "auto")
+
+
+@patch("kvtrace.generators.hf_gen.QuantizedCacheConfig")
+@patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
+@patch("kvtrace.generators.hf_gen.AutoTokenizer")
+def test_hf_generator_passes_attention_mask_and_pad_token(mock_tok, mock_model, mock_qcc):
+    """Without these kwargs HF generate floods the log 80x per (model, config)."""
+    tokenizer = MagicMock()
+    tokenizer.apply_chat_template.return_value = {"input_ids": MagicMock()}
+    tokenizer.decode.return_value = "x"
+    tokenizer.pad_token_id = None
+    tokenizer.eos_token_id = 42
+    mock_tok.from_pretrained.return_value = tokenizer
+
+    model = MagicMock()
+    fake_out = MagicMock()
+    fake_out.sequences = MagicMock()
+    fake_out.sequences.shape = (1, 5)
+    seq_tensor = MagicMock()
+    seq_tensor.tolist.return_value = [1, 2, 3, 4, 5]
+    fake_out.sequences.__getitem__ = lambda self, idx: seq_tensor
+    model.generate.return_value = fake_out
+    model.device = "cpu"
+    mock_model.from_pretrained.return_value = model
+
+    gen = HFGenerator()
+    gen.load(ModelCfg(hf_id="m"), QuantCfg(engine="hf", hqq_nbits=4))
+    gen.generate([MathProblem(idx=0, problem="q", answer="x", source="aime-24")])
+
+    _, kwargs = model.generate.call_args
+    assert "attention_mask" in kwargs
+    # When pad_token_id is unset we fall back to eos_token_id.
+    assert kwargs["pad_token_id"] == 42
