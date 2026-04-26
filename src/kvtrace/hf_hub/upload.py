@@ -32,6 +32,16 @@ def _branch_exists(api: Any, repo_id: str, branch: str) -> bool:
     return False
 
 
+def _ensure_dataset_repo(api: Any, repo_id: str) -> bool:
+    """Idempotently create the dataset repo. Returns True if it now exists."""
+    try:
+        api.create_repo(repo_id=repo_id, repo_type="dataset", exist_ok=True)
+        return True
+    except Exception as e:
+        log.warning("create_repo failed for %s: %s", repo_id, e)
+        return False
+
+
 def upload_dataset_file(
     local_path: Path,
     *,
@@ -42,8 +52,10 @@ def upload_dataset_file(
 ) -> bool:
     """Upload a file to a HuggingFace dataset repo under a revision branch.
 
-    Returns True if an upload was performed; False if skipped (no repo or
-    revision already present).
+    Best-effort: never raises. Returns True if an upload was performed;
+    False if skipped (no repo configured, repo creation failed, revision
+    already present, or any upload-time error). Trace generation is the
+    expensive step — a failed upload must not crash the pipeline.
     """
     repo_id = repo_id or resolve_repo_id()
     if not repo_id:
@@ -54,17 +66,30 @@ def upload_dataset_file(
         from huggingface_hub import HfApi
         api = HfApi()
 
+    # First-run convenience: auto-create the dataset repo if it doesn't
+    # exist yet. Without this, list_repo_refs / create_branch return 404
+    # and the caller sees a stack trace mid-pipeline.
+    if not _ensure_dataset_repo(api, repo_id):
+        log.warning("could not ensure repo %s exists; skipping upload of %s", repo_id, local_path)
+        return False
+
     if _branch_exists(api, repo_id, revision_tag):
         log.info("revision %s already on %s; skipping upload", revision_tag, repo_id)
         return False
 
-    api.create_branch(repo_id=repo_id, repo_type="dataset", branch=revision_tag, exist_ok=True)
-    api.upload_file(
-        path_or_fileobj=str(local_path),
-        path_in_repo=path_in_repo or local_path.name,
-        repo_id=repo_id,
-        repo_type="dataset",
-        revision=revision_tag,
-    )
+    try:
+        api.create_branch(
+            repo_id=repo_id, repo_type="dataset", branch=revision_tag, exist_ok=True
+        )
+        api.upload_file(
+            path_or_fileobj=str(local_path),
+            path_in_repo=path_in_repo or local_path.name,
+            repo_id=repo_id,
+            repo_type="dataset",
+            revision=revision_tag,
+        )
+    except Exception as e:
+        log.warning("upload failed for %s -> %s@%s: %s", local_path, repo_id, revision_tag, e)
+        return False
     log.info("uploaded %s -> %s@%s", local_path, repo_id, revision_tag)
     return True

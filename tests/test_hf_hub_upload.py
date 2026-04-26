@@ -41,8 +41,48 @@ def test_upload_calls_api(tmp_path, monkeypatch):
     monkeypatch.setenv("HF_REPO_ID", "me/kv")
     result = upload_dataset_file(f, revision_tag="traces-m-bf16", api=api)
     assert result is True
+    api.create_repo.assert_called_once()
     api.create_branch.assert_called_once()
     api.upload_file.assert_called_once()
+
+
+def test_upload_creates_dataset_repo_with_exist_ok(tmp_path, monkeypatch):
+    """First-run case: dataset repo doesn't exist on Hub yet."""
+    f = tmp_path / "data.jsonl"
+    f.write_text('{"a":1}\n')
+    api = MagicMock()
+    api.list_repo_refs.return_value = MagicMock(branches=[])
+    monkeypatch.setenv("HF_REPO_ID", "me/kv")
+    upload_dataset_file(f, revision_tag="traces-m-bf16", api=api)
+    _, kwargs = api.create_repo.call_args
+    assert kwargs["repo_id"] == "me/kv"
+    assert kwargs["repo_type"] == "dataset"
+    assert kwargs["exist_ok"] is True
+
+
+def test_upload_skips_when_create_repo_fails(tmp_path, monkeypatch):
+    """If repo can't be created (e.g. auth), don't crash — just skip."""
+    f = tmp_path / "data.jsonl"
+    f.write_text('{"a":1}\n')
+    api = MagicMock()
+    api.create_repo.side_effect = RuntimeError("403 forbidden")
+    monkeypatch.setenv("HF_REPO_ID", "me/kv")
+    result = upload_dataset_file(f, revision_tag="traces-m-bf16", api=api)
+    assert result is False
+    api.create_branch.assert_not_called()
+    api.upload_file.assert_not_called()
+
+
+def test_upload_swallows_upload_errors(tmp_path, monkeypatch):
+    """A flaky 5xx on upload_file must not propagate and kill Phase 1."""
+    f = tmp_path / "data.jsonl"
+    f.write_text('{"a":1}\n')
+    api = MagicMock()
+    api.list_repo_refs.return_value = MagicMock(branches=[])
+    api.upload_file.side_effect = RuntimeError("503 service unavailable")
+    monkeypatch.setenv("HF_REPO_ID", "me/kv")
+    result = upload_dataset_file(f, revision_tag="traces-m-bf16", api=api)
+    assert result is False  # logged-and-swallowed, no exception raised
 
 
 def test_upload_idempotent_when_revision_exists(tmp_path, monkeypatch):
