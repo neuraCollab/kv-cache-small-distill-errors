@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 try:
@@ -150,8 +151,15 @@ class HFGenerator(Generator):
         # prompt lengths to slice the right span out of each generated row.
         encoded: list[Any] = [self._tokenize_prompt(p) for p in problems]
 
+        n_chunks = (len(problems) + self.batch_size - 1) // self.batch_size
+        log.info(
+            "HFGenerator.generate: %d problems, batch_size=%d → %d chunks (hqq_nbits=%d)",
+            len(problems), self.batch_size, n_chunks, self._hqq_nbits,
+        )
+
         results: list[GenerationResult] = []
         for chunk_start in range(0, len(problems), self.batch_size):
+            chunk_idx = chunk_start // self.batch_size + 1
             chunk_problems = problems[chunk_start : chunk_start + self.batch_size]
             chunk_ids = encoded[chunk_start : chunk_start + self.batch_size]
 
@@ -174,6 +182,15 @@ class HFGenerator(Generator):
             input_ids = input_ids.to(self._model.device)
             attention_mask = attention_mask.to(self._model.device)
 
+            # Definitive proof of batching: `input_ids.shape[0]` is the actual
+            # batch dim handed to model.generate(). If this prints `n=1` while
+            # batch_size=4 was requested, something upstream is wrong.
+            log.info(
+                "  chunk %d/%d: input_ids.shape=%s (n=%d, max_prompt_len=%d)",
+                chunk_idx, n_chunks, tuple(input_ids.shape), n, max_len,
+            )
+            t0 = time.perf_counter()
+
             # QuantizedCacheConfig is stateful — give each chunk its own so
             # leftover KV buffers from the previous batch can't bleed in.
             cache_config = QuantizedCacheConfig(
@@ -195,6 +212,14 @@ class HFGenerator(Generator):
                 cache_implementation="quantized",
                 cache_config=cache_config,
                 return_dict_in_generate=True,
+            )
+            elapsed = time.perf_counter() - t0
+            new_tokens_total = out.sequences.shape[-1] - max_len
+            log.info(
+                "  chunk %d/%d done in %.1fs (%d new tokens, %.1f tok/s aggregate)",
+                chunk_idx, n_chunks, elapsed,
+                new_tokens_total * n,
+                (new_tokens_total * n) / max(elapsed, 1e-6),
             )
 
             # out.sequences shape: [n, max_len + new_tokens]
