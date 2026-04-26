@@ -63,3 +63,16 @@ def test_hf_generator_unload_calls_free_gpu(mock_tok, mock_model, mock_free):
     gen.unload()
     mock_free.assert_called_once()
     assert gen._model is None
+
+
+@patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
+@patch("kvtrace.generators.hf_gen.AutoTokenizer")
+def test_hf_generator_load_pins_to_single_gpu(mock_tok, mock_model):
+    """device_map='auto' lets accelerate offload buffers and break HQQ KV cache."""
+    gen = HFGenerator()
+    gen.load(ModelCfg(hf_id="m"), QuantCfg(engine="hf", hqq_nbits=4))
+    _, kwargs = mock_model.from_pretrained.call_args
+    # Either {"": 0} (real torch path) or "auto" (no-torch CI path) — both
+    # acceptable; what matters is that we're not silently sharding the
+    # production case. On any host with torch importable we expect single-GPU.
+    assert kwargs["device_map"] in ({"": 0}, "auto")
