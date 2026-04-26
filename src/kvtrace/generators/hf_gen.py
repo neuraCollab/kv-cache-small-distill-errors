@@ -122,9 +122,22 @@ class HFGenerator(Generator):
             )
             input_ids = enc.to(self._model.device) if hasattr(enc, "to") else enc["input_ids"].to(self._model.device)
             prompt_len = input_ids.shape[-1]
+            # Without an explicit attention_mask + pad_token_id, HF generate
+            # emits a per-call warning ("you may observe unexpected behavior")
+            # that floods the log 80x per (model, config) and risks subtly
+            # incorrect attention on tokenizers where pad_token_id is unset.
+            # batch=1 with no padding => mask is all 1s.
+            attention_mask = input_ids.new_ones(input_ids.shape)
+            pad_token_id = (
+                self._tokenizer.pad_token_id
+                if getattr(self._tokenizer, "pad_token_id", None) is not None
+                else self._tokenizer.eos_token_id
+            )
 
             out = self._model.generate(
                 input_ids,
+                attention_mask=attention_mask,
+                pad_token_id=pad_token_id,
                 max_new_tokens=self.sampling_max_tokens,
                 do_sample=(self.sampling_temperature > 0.0),
                 temperature=self.sampling_temperature or None,
