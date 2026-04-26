@@ -22,5 +22,5 @@ pipeline:
     calibration_threshold: 0.7
   hf_hub:
     repo_id_env: HF_REPO_ID
-    repo_id_default_template: "{hf_user}/kv-trace-study"
+    repo_id_default_template: "{hf_user}/kv-trace"
     repo_type: dataset

@@ -1,0 +1,36 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh pr create --base main --head feat/phase-0-scaffolding-and-config --title 'Phase 0 scaffolding + Phase 1.1 configs' --body ' *)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/Users/morro/AppData/Local/**)",
+      "Bash(ls scripts/)",
+      "Bash(ls config/)",
+      "Bash(git -C C:/Users/morro/prog/files status)",
+      "Bash(git -C C:/Users/morro/prog/files log --oneline -10)",
+      "Bash(git -C C:/Users/morro/prog/files branch -vv)",
+      "Bash(gh --version)",
+      "Bash(gh repo *)",
+      "Bash(git -C C:/Users/morro/prog/files diff main...HEAD --stat)",
+      "Bash(git -C C:/Users/morro/prog/files status --short)",
+      "Bash(git -C C:/Users/morro/prog/files log origin/feat/phase-0-scaffolding-and-config..HEAD --oneline)",
+      "Bash(gh pr *)",
+      "Bash(gh run *)",
+      "Bash(python -c \"import ruff\")",
+      "Bash(python -m ruff --version)",
+      "Bash(pip install *)",
+      "Bash(python -m ruff check .)",
+      "Bash(python -m site --user-base)",
+      "Bash(ls \"$\\(python -m site --user-base \\)/Scripts/\")",
+      "Bash(py -m ruff --version)",
+      "Read(//c/Users/morro/AppData/Roaming/Python/**)",
+      "Bash(pip show *)",
+      "Bash(\"C:/Users/morro/AppData/Roaming/Python/Python313/Scripts/ruff.exe\" check *)",
+      "Bash(\"C:/Users/morro/AppData/Roaming/Python/Python313/Scripts/mypy.exe\" --version)",
+      "Bash(\"C:/Users/morro/AppData/Roaming/Python/Python313/Scripts/mypy.exe\" src/kvtrace)",
+      "Bash(\"C:/Users/morro/AppData/Roaming/Python/Python313/Scripts/pytest.exe\" --version)",
+      "Bash(\"C:/Users/morro/AppData/Roaming/Python/Python313/Scripts/pytest.exe\" -m \"not gpu and not live_api\" --no-cov)",
+      "Bash(\"C:/Users/morro/AppData/Roaming/Python/Python313/Scripts/pytest.exe\" -m \"not gpu and not live_api\" --cov=src/kvtrace --cov-fail-under=85)"
+    ]
+  }
+}
