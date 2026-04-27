@@ -107,11 +107,21 @@ class HFGenerator(Generator):
         # models all fit comfortably on cuda:0, so single-device placement
         # is correct and avoids the cuda:0/cpu mismatch crash.
         device_map: Any = {"": 0} if torch is not None else "auto"
+        # Force eager attention. SDPA (the default since transformers 4.36)
+        # crashes on HQQ-dequantized K/V tensors for some architectures —
+        # observed on Qwen3 (`transformers/models/qwen3/modeling_qwen3.py`
+        # → `transformers/integrations/sdpa_attention.py` →
+        # `torch.nn.functional.scaled_dot_product_attention`). The
+        # de-quantized cache tensors don't have the contiguous layout
+        # Flash-/Memory-Efficient-SDPA kernels require. Eager is slower but
+        # works for every architecture, which is what we need across
+        # DeepSeek-R1-Distill (Qwen2) and Qwen3 in the same study.
         self._model = AutoModelForCausalLM.from_pretrained(
             model_cfg.hf_id,
             torch_dtype=torch_dtype,
             device_map=device_map,
             trust_remote_code=model_cfg.trust_remote_code,
+            attn_implementation="eager",
         )
 
     def _tokenize_prompt(self, problem: MathProblem) -> Any:
