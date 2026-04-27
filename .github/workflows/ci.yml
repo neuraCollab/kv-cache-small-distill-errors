@@ -29,8 +29,9 @@ jobs:
           # represent). The CPU wheel is ~200 MB but cached by setup-python.
           pip install torch --index-url https://download.pytorch.org/whl/cpu
           # Match the requirements.txt pin so CI catches API drift in the
-          # same window the production deploy uses.
-          pip install 'transformers>=4.51,<4.56' 'tokenizers>=0.21' datasets huggingface_hub
+          # same window the production deploy uses. transformers 4.55.x
+          # broke HQQ QuantizedCache; 4.51.x is the known-good window.
+          pip install 'transformers>=4.51,<4.52' 'tokenizers>=0.21' datasets huggingface_hub
           pip install pydantic pyyaml scipy numpy matplotlib tqdm tenacity
           pip install anthropic==0.40.0
           # mypy stub packages (no runtime impact)

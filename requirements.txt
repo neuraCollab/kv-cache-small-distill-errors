@@ -2,14 +2,17 @@
 # transformers >=4.51 ships Qwen3 architecture support; without it
 # `AutoConfig.from_pretrained("Qwen/Qwen3-1.7B")` raises
 # `KeyError: 'qwen3'` and aborts the pipeline mid-run.
-# Upper bound <4.56 keeps us inside the API window where
-# `transformers.cache_utils.QuantizedCacheConfig` still exists. It was
-# removed in the 5.x line in favour of constructing `QuantizedCache`
-# directly with a `PreTrainedConfig`, which our HQQ path doesn't use.
+# Upper bound <4.52 because 4.55.4 (and likely earlier 4.5x) broke the
+# HQQ QuantizedCache → eager attention path: `attn_weights + causal_mask`
+# raises `RuntimeError: The size of tensor a (N) must match the size of
+# tensor b (2) at non-singleton dimension 3` for both Qwen2 and Qwen3.
+# Reproduced in isolation with a 15-token prompt; confirmed fixed on
+# 4.51.3. We haven't bisected 4.52-4.54, so the conservative pin is
+# <4.52. Revisit when transformers ships a fix and we can re-test.
 # vLLM 0.7.3 is the first release that recognises the qwen3 model_type;
 # 0.9+ rewrote SamplingParams construction in incompatible ways.
 vllm>=0.7.3,<0.9
-transformers>=4.51.0,<4.56
+transformers>=4.51.0,<4.52
 tokenizers>=0.21
 # accelerate 1.x tracks transformers 4.51's device_map / offload changes;
 # pin >=1.0 so older 0.x doesn't get pulled in by a stale lockfile.
