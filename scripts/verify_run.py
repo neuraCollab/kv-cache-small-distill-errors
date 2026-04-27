@@ -131,12 +131,16 @@ def check_fdp(model: str, qkey: str) -> int | None:
         warn(f"{path.name}: empty (no problems matched between baseline and quant)")
         return 0
     diverged = sum(1 for r in rows if r.get("fdp_token_idx") is not None)
-    boxed_match = sum(1 for r in rows if r.get("boxed_match") is True)
     div_rate = diverged / len(rows)
-    bm_rate = boxed_match / len(rows)
+    # `boxed_match` is a 5-way string enum produced by find_fdp:
+    #   both_correct | both_wrong | baseline_only | quant_only | no_boxed
+    # Earlier I treated it as a bool — that always counted 0 because strings
+    # don't compare True. Show the full distribution so the operator can spot
+    # any "quant beat baseline" cases (`quant_only` is rare and interesting).
+    bm = Counter(r.get("boxed_match") for r in rows)
     ok(f"{path.name}: {len(rows)} pairs, "
        f"diverged={diverged} ({div_rate:.0%}), "
-       f"boxed_match={boxed_match} ({bm_rate:.0%})")
+       f"boxed_match={dict(bm)}")
     return diverged
 
 
