@@ -203,14 +203,23 @@ class HFGenerator(Generator):
             )
             t0 = time.perf_counter()
 
-            # QuantizedCacheConfig is stateful — give each chunk its own so
-            # leftover KV buffers from the previous batch can't bleed in.
-            cache_config = QuantizedCacheConfig(
-                backend="HQQ",
-                nbits=self._hqq_nbits,
-                device=cache_device,
-                compute_dtype=compute_dtype,
-            )
+            # transformers 4.55 deprecated `QuantizedCacheConfig` and changed
+            # `_prepare_cache_for_generation` to subscript the cache_config
+            # as a plain dict (`cache_config["backend"]`). Passing the object
+            # raises `TypeError: 'QuantizedCacheConfig' object is not
+            # subscriptable`. We keep the symbol imported above as a version
+            # sentinel (so load() can fail loud on transformers 5.x where it's
+            # gone), but build the runtime config as a dict.
+            #
+            # Re-built per chunk so leftover state from the previous batch
+            # can't bleed in — the cache class transformers instantiates
+            # from this dict is stateful.
+            cache_config = {
+                "backend": "HQQ",
+                "nbits": self._hqq_nbits,
+                "device": cache_device,
+                "compute_dtype": compute_dtype,
+            }
 
             out = self._model.generate(
                 input_ids,
