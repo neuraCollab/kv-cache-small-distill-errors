@@ -23,7 +23,14 @@ jobs:
           # Skip vLLM + sentence-transformers heavy CUDA extras in CI:
           # install only what the unmarked tests need.
           pip install pytest pytest-cov pytest-mock responses ruff mypy
-          pip install transformers==4.45.0 tokenizers datasets huggingface_hub
+          # CPU-only torch wheel — needed because tests/test_generators_hf.py
+          # imports torch at module level (real tensors are required to
+          # exercise the batched left-padding path that MagicMock can't
+          # represent). The CPU wheel is ~200 MB but cached by setup-python.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          # Match the requirements.txt pin so CI catches API drift in the
+          # same window the production deploy uses.
+          pip install 'transformers>=4.51,<4.56' 'tokenizers>=0.21' datasets huggingface_hub
           pip install pydantic pyyaml scipy numpy matplotlib tqdm tenacity
           pip install anthropic==0.40.0
           # mypy stub packages (no runtime impact)
