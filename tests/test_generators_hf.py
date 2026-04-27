@@ -22,9 +22,10 @@ def _make_tokenizer(prompt_token_ids: list[list[int]], decoded_text: str = "x"):
     return tokenizer
 
 
+@patch("kvtrace.generators.hf_gen.QuantizedCacheConfig")
 @patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
 @patch("kvtrace.generators.hf_gen.AutoTokenizer")
-def test_hf_generator_load_uses_hqq_nbits(mock_tok, mock_model):
+def test_hf_generator_load_uses_hqq_nbits(mock_tok, mock_model, mock_qcc):
     quant = QuantCfg(engine="hf", hqq_nbits=4)
     gen = HFGenerator()
     gen.load(ModelCfg(hf_id="foo/bar"), quant)
@@ -38,9 +39,23 @@ def test_hf_generator_load_rejects_vllm_engine(mock_tok, mock_model):
         HFGenerator().load(ModelCfg(hf_id="foo"), QuantCfg(engine="vllm", kv_cache_dtype="auto"))
 
 
+@patch("kvtrace.generators.hf_gen.QuantizedCacheConfig", new=None)
 @patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
 @patch("kvtrace.generators.hf_gen.AutoTokenizer")
-def test_hf_generator_load_sets_left_padding(mock_tok, mock_model):
+def test_hf_generator_load_raises_actionable_error_when_quantizedcacheconfig_missing(
+    mock_tok, mock_model
+):
+    """transformers >=5.0 removed QuantizedCacheConfig. We want the user to
+    see a `pip install` hint instead of a deep AttributeError two minutes
+    into model load."""
+    with pytest.raises(RuntimeError, match=r"transformers\s*>=4\.51,<4\.56"):
+        HFGenerator().load(ModelCfg(hf_id="m"), QuantCfg(engine="hf", hqq_nbits=4))
+
+
+@patch("kvtrace.generators.hf_gen.QuantizedCacheConfig")
+@patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
+@patch("kvtrace.generators.hf_gen.AutoTokenizer")
+def test_hf_generator_load_sets_left_padding(mock_tok, mock_model, mock_qcc):
     """Causal LMs require LEFT padding for batched generation."""
     tokenizer = MagicMock()
     tokenizer.pad_token_id = None
@@ -82,10 +97,11 @@ def test_hf_generator_generate_returns_result(mock_tok, mock_model, mock_qcc):
     assert results[0].generated_tokens == 5
 
 
+@patch("kvtrace.generators.hf_gen.QuantizedCacheConfig")
 @patch("kvtrace.generators.hf_gen.free_gpu")
 @patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
 @patch("kvtrace.generators.hf_gen.AutoTokenizer")
-def test_hf_generator_unload_calls_free_gpu(mock_tok, mock_model, mock_free):
+def test_hf_generator_unload_calls_free_gpu(mock_tok, mock_model, mock_free, mock_qcc):
     gen = HFGenerator()
     gen.load(ModelCfg(hf_id="m"), QuantCfg(engine="hf", hqq_nbits=2))
     gen.unload()
@@ -93,9 +109,10 @@ def test_hf_generator_unload_calls_free_gpu(mock_tok, mock_model, mock_free):
     assert gen._model is None
 
 
+@patch("kvtrace.generators.hf_gen.QuantizedCacheConfig")
 @patch("kvtrace.generators.hf_gen.AutoModelForCausalLM")
 @patch("kvtrace.generators.hf_gen.AutoTokenizer")
-def test_hf_generator_load_pins_to_single_gpu(mock_tok, mock_model):
+def test_hf_generator_load_pins_to_single_gpu(mock_tok, mock_model, mock_qcc):
     """device_map='auto' lets accelerate offload buffers and break HQQ KV cache."""
     gen = HFGenerator()
     gen.load(ModelCfg(hf_id="m"), QuantCfg(engine="hf", hqq_nbits=4))

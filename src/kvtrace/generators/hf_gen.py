@@ -63,6 +63,18 @@ class HFGenerator(Generator):
             raise ValueError(f"HFGenerator requires engine='hf', got {quant_cfg.engine!r}")
         if quant_cfg.hqq_nbits not in (2, 4, 8):
             raise ValueError(f"HQQ nbits must be 2/4/8, got {quant_cfg.hqq_nbits!r}")
+        if QuantizedCacheConfig is None:
+            # transformers 5.x removed the symbol; pinning in requirements.txt
+            # keeps us in 4.51-4.55 where it's still present, but if a stale
+            # environment ignored those pins we want to fail loudly here
+            # rather than crash deep inside generate() with an unhelpful
+            # AttributeError. The user's recourse is `pip install
+            # 'transformers>=4.51,<4.56'`.
+            raise RuntimeError(
+                "transformers.cache_utils.QuantizedCacheConfig is unavailable. "
+                "HFGenerator (HQQ KV-cache) requires transformers >=4.51,<4.56. "
+                "Run `pip install -U -r requirements.txt` to fix."
+            )
 
         self._hqq_nbits = quant_cfg.hqq_nbits
         self._model_cfg = model_cfg

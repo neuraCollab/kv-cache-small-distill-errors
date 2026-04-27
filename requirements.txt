@@ -1,13 +1,26 @@
 # Core
-vllm==0.6.6
-transformers==4.45.2
-tokenizers>=0.20
-accelerate>=0.34.0
+# transformers >=4.51 ships Qwen3 architecture support; without it
+# `AutoConfig.from_pretrained("Qwen/Qwen3-1.7B")` raises
+# `KeyError: 'qwen3'` and aborts the pipeline mid-run.
+# Upper bound <4.56 keeps us inside the API window where
+# `transformers.cache_utils.QuantizedCacheConfig` still exists. It was
+# removed in the 5.x line in favour of constructing `QuantizedCache`
+# directly with a `PreTrainedConfig`, which our HQQ path doesn't use.
+# vLLM 0.7.3 is the first release that recognises the qwen3 model_type;
+# 0.9+ rewrote SamplingParams construction in incompatible ways.
+vllm>=0.7.3,<0.9
+transformers>=4.51.0,<4.56
+tokenizers>=0.21
+# accelerate 1.x tracks transformers 4.51's device_map / offload changes;
+# pin >=1.0 so older 0.x doesn't get pulled in by a stale lockfile.
+accelerate>=1.0.0
 datasets>=3.0.0
 huggingface_hub>=0.25.0
 
 # KV quantization
-hqq>=0.2.2
+# HQQ 0.2.5+ matches the transformers 4.51 QuantizedCacheConfig signature
+# (backend="HQQ", nbits, device, compute_dtype).
+hqq>=0.2.5
 
 # Judge
 anthropic==0.40.0
