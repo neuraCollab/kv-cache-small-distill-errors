@@ -44,18 +44,16 @@ def install_capture_hooks(
         outputs[1] tuple
     """
     handle = CaptureHandle()
-    # Pre-allocate slots per layer so order is deterministic
-    n_layers = len(attention_modules)
-    handle.q = [None] * n_layers  # type: ignore[list-item]
-    handle.k_pre = [None] * n_layers  # type: ignore[list-item]
-    handle.v_pre = [None] * n_layers  # type: ignore[list-item]
-    handle.k_post = [None] * n_layers  # type: ignore[list-item]
-    handle.v_post = [None] * n_layers  # type: ignore[list-item]
+    # Append mode: lists grow with each hook invocation.
+    # For a single forward pass with N layers, each list ends up with N entries
+    # (one per layer) — same indexing as before.
+    # For AR multi-step generation, lists grow by N per step, and
+    # handle.q[i::n_layers] gives all captures for layer i across steps.
 
-    def _make_q_hook(layer_idx: int):
+    def _make_q_hook():
         def _hook(module, inputs, output):
             # output of q_proj is [bsz, seq, hidden] — захватываем как есть
-            handle.q[layer_idx] = output.detach().clone()
+            handle.q.append(output.detach().clone())
         return _hook
 
     def _make_attn_hook(layer_idx: int):
@@ -70,29 +68,32 @@ def install_capture_hooks(
                 and len(outputs[1]) == 3
             ):
                 q_tup, k_src, v_src = outputs[1]
-                if handle.q[layer_idx] is None:
-                    handle.q[layer_idx] = q_tup.detach().clone()
+                # Only append Q if q_proj hook hasn't already done so for this call.
+                # In append mode: q_proj appended Q before attn hook fires,
+                # so len(handle.q) > len(handle.k_pre) means Q is already captured.
+                if len(handle.q) <= len(handle.k_pre):
+                    handle.q.append(q_tup.detach().clone())
                 from_outputs = True
             elif pkv is not None and hasattr(pkv, "key_cache"):
                 k_src = pkv.key_cache[layer_idx]
                 v_src = pkv.value_cache[layer_idx]
             else:
-                # No K/V source found. If Q was already captured via q_proj hook,
-                # skip K/V capture silently (Q-only scenario).
-                if handle.q[layer_idx] is not None:
+                # No K/V source found. If Q was already captured via q_proj hook
+                # for this call, skip K/V capture silently (Q-only scenario).
+                if len(handle.q) > len(handle.k_pre):
                     return
                 raise RuntimeError(
                     f"Layer {layer_idx}: no Q/K/V source. "
                     f"output type={type(outputs)}, pkv={pkv}"
                 )
 
-            handle.k_pre[layer_idx] = k_src.detach().clone()
-            handle.v_pre[layer_idx] = v_src.detach().clone()
+            handle.k_pre.append(k_src.detach().clone())
+            handle.v_pre.append(v_src.detach().clone())
 
             k_q = quant_fn(k_src)
             v_q = quant_fn(v_src)
-            handle.k_post[layer_idx] = k_q.detach().clone()
-            handle.v_post[layer_idx] = v_q.detach().clone()
+            handle.k_post.append(k_q.detach().clone())
+            handle.v_post.append(v_q.detach().clone())
 
             # Replace cache entries.
             # When k/v came from outputs tuple, k IS cache.key_cache[layer_idx]
@@ -109,7 +110,7 @@ def install_capture_hooks(
 
     for layer_idx, mod in enumerate(attention_modules):
         if hasattr(mod, "q_proj"):
-            h = mod.q_proj.register_forward_hook(_make_q_hook(layer_idx))
+            h = mod.q_proj.register_forward_hook(_make_q_hook())
             handle._hook_handles.append(h)
         h = mod.register_forward_hook(_make_attn_hook(layer_idx))
         handle._hook_handles.append(h)
