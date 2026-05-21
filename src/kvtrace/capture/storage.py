@@ -30,9 +30,20 @@ class CaptureData:
 
 
 def save_capture(cap: CaptureData, path: Path) -> None:
+    n_layers = len(cap.q)
+    for field_name, tensors_list in [
+        ("k_pre", cap.k_pre),
+        ("v_pre", cap.v_pre),
+        ("k_post", cap.k_post),
+        ("v_post", cap.v_post),
+    ]:
+        if len(tensors_list) != n_layers:
+            raise ValueError(
+                f"Layer count mismatch: q has {n_layers} layers, "
+                f"{field_name} has {len(tensors_list)}"
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     tensors: dict[str, torch.Tensor] = {}
-    n_layers = len(cap.q)
     for layer in range(n_layers):
         tensors[f"q_l{layer}"] = cap.q[layer].contiguous()
         tensors[f"k_pre_l{layer}"] = cap.k_pre[layer].contiguous()

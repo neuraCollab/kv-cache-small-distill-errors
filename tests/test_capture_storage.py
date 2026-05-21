@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from kvtrace.capture.storage import CaptureData, load_capture, save_capture
@@ -52,6 +53,10 @@ def test_roundtrip_preserves_shapes_and_values(tmp_path: Path):
         assert torch.equal(orig, got)
     for orig, got in zip(cap.v_post, loaded.v_post):
         assert torch.equal(orig, got)
+    for orig, got in zip(cap.v_pre, loaded.v_pre):
+        assert torch.equal(orig, got)
+    for orig, got in zip(cap.k_post, loaded.k_post):
+        assert torch.equal(orig, got)
     assert torch.equal(cap.logits, loaded.logits)
 
 
@@ -77,3 +82,12 @@ def test_meta_includes_nested_lists(tmp_path: Path):
     save_capture(cap, out)
     loaded = load_capture(out)
     assert loaded.meta["input_token_ids"] == [0, 1, 2]
+
+
+def test_save_capture_raises_on_layer_count_mismatch(tmp_path: Path):
+    """save_capture должен поймать inconsistency между списками тензоров."""
+    cap = _make_dummy_capture(W=4, n_layers=2)
+    # Mutilate: drop one layer from k_pre
+    cap.k_pre = cap.k_pre[:1]
+    with pytest.raises(ValueError, match="Layer count mismatch"):
+        save_capture(cap, tmp_path / "bad.safetensors")
