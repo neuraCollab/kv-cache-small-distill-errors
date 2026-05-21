@@ -17,6 +17,7 @@ testpaths = ["tests"]
 markers = [
     "gpu: requires CUDA (skipped by default in CI)",
     "live_api: requires ANTHROPIC_API_KEY (skipped by default)",
+    "slow: slow end-to-end tests (skipped by default in CI)",
 ]
 
 [tool.coverage.run]

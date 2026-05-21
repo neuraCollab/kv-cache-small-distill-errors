@@ -86,6 +86,17 @@ echo "=== Phase 4: analyze ==="
 python scripts/04_analyze.py \
   || echo "[run_all] FAILED phase4" | tee -a "$FAIL_LOG"
 
+# Phase 6: KV-matrix capture (CPU-only, optional)
+if [[ "${RUN_PHASE_6:-0}" == "1" ]]; then
+    echo "=== Phase 6: KV-matrix capture (CPU) ==="
+    python scripts/06_capture_kv.py \
+        --model qwen3-1.7b \
+        --quants bf16 fp8_e4m3 fp8_e5m2 \
+        --modes tf ar \
+        --output-dir outputs/kv_capture/ \
+        --resume
+fi
+
 if [[ -s "$FAIL_LOG" ]]; then
   echo "[run_all] done with failures. See $FAIL_LOG and outputs/report.md"
   exit 0  # not a hard failure: the partial output is still useful
