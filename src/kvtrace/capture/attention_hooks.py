@@ -67,7 +67,7 @@ def install_capture_hooks(
                     )
                 k = pkv.key_cache[layer_idx]
                 v = pkv.value_cache[layer_idx]
-                q = None  # placeholder for HF path; см. Task 7
+                q = None  # placeholder for HF path; q_proj hook добавляется в Task 6
 
             handle.q.append(q if q is not None else torch.empty(0))
             handle.k_pre.append(k.detach().clone())
