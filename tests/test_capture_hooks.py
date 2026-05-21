@@ -69,14 +69,17 @@ def test_hook_captures_q_k_v_per_layer():
         attention_modules=list(model.layers),
         quant_fn=lambda x: x,  # bf16 — identity
     )
-    cache = _FakeCache()
-    x = torch.randn(1, 4, 8, dtype=torch.bfloat16)
-    model(x, past_key_value=cache)
+    try:
+        cache = _FakeCache()
+        x = torch.randn(1, 4, 8, dtype=torch.bfloat16)
+        model(x, past_key_value=cache)
 
-    assert len(handle.q) == 2  # 2 layers
-    assert len(handle.k_pre) == 2
-    assert len(handle.v_post) == 2
-    assert handle.q[0].shape == (1, 4, 1, 8)
+        assert len(handle.q) == 2  # 2 layers
+        assert len(handle.k_pre) == 2
+        assert len(handle.v_post) == 2
+        assert handle.q[0].shape == (1, 4, 1, 8)
+    finally:
+        handle.remove()
 
 
 def test_hook_quantizes_kv_in_cache():
@@ -86,14 +89,17 @@ def test_hook_quantizes_kv_in_cache():
         attention_modules=list(model.layers),
         quant_fn=fp8_e4m3,
     )
-    cache = _FakeCache()
-    x = torch.randn(1, 4, 8, dtype=torch.bfloat16)
-    model(x, past_key_value=cache)
+    try:
+        cache = _FakeCache()
+        x = torch.randn(1, 4, 8, dtype=torch.bfloat16)
+        model(x, past_key_value=cache)
 
-    # k_pre — оригинальный K; k_post — после fp8_e4m3
-    assert torch.equal(handle.k_post[0], fp8_e4m3(handle.k_pre[0]))
-    # Кеш модели тоже содержит quantized версию
-    assert torch.equal(cache.key_cache[0], handle.k_post[0])
+        # k_pre — оригинальный K; k_post — после fp8_e4m3
+        assert torch.equal(handle.k_post[0], fp8_e4m3(handle.k_pre[0]))
+        # Кеш модели тоже содержит quantized версию
+        assert torch.equal(cache.key_cache[0], handle.k_post[0])
+    finally:
+        handle.remove()
 
 
 def test_remove_hooks_stops_capturing():
@@ -155,10 +161,13 @@ def test_hook_captures_q_via_q_proj_on_hf_style_attention():
         attention_modules=list(model.layers),
         quant_fn=lambda x: x,
     )
-    cache = _FakeCache()
-    x = torch.randn(1, 3, 8, dtype=torch.float32)
-    model(x, past_key_value=cache)
+    try:
+        cache = _FakeCache()
+        x = torch.randn(1, 3, 8, dtype=torch.float32)
+        model(x, past_key_value=cache)
 
-    # Q должно быть захвачено через хук на q_proj
-    assert len(handle.q) == 1
-    assert handle.q[0].shape == (1, 3, 8)  # output q_proj без reshape
+        # Q должно быть захвачено через хук на q_proj
+        assert len(handle.q) == 1
+        assert handle.q[0].shape == (1, 3, 8)  # output q_proj без reshape
+    finally:
+        handle.remove()

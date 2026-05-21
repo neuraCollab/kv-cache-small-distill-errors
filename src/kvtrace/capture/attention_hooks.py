@@ -1,8 +1,18 @@
-"""Forward-хук installer для захвата Q/K_pre/K_post/V_pre/V_post.
+"""Forward-хуки + monkey-patch для захвата Q/K_pre/K_post/V_pre/V_post.
 
-Подмена K/V в кеше реализована через monkey-patch метода
-`past_key_value.update(...)` ровно в момент attention forward. Это
-работает и для HF DynamicCache, и для нашего FakeCache в тестах.
+КРИТИЧНО: квантование K/V применяется через monkey-patch
+`past_key_value.update(...)`, который вызывается ВНУТРИ attention.forward
+ДО того как attention читает cache. Так модель действительно видит
+квантованный K/V (предыдущая попытка через post-forward hook не работала
+— attention уже использовал bf16 K/V к моменту срабатывания хука).
+
+Схема хуков:
+  1. forward_pre_hook на каждом attention блоке — устанавливает
+     monkey-patch на pkv.update при первом срабатывании per cache instance.
+  2. forward_hook на module.q_proj — захватывает Q post-projection,
+     pre-RoPE (для HF Qwen3-style моделей).
+  3. forward_hook на attention block — fallback для FakeAttention path,
+     которая не имеет q_proj и кладёт Q в outputs[1] tuple.
 """
 from __future__ import annotations
 
@@ -15,22 +25,29 @@ import torch.nn as nn
 
 @dataclass
 class CaptureHandle:
-    """Контейнер захваченных тензоров + метод снятия хуков."""
+    """Контейнер захваченных тензоров + метод снятия хуков и анпатча."""
     q: list[torch.Tensor] = field(default_factory=list)
     k_pre: list[torch.Tensor] = field(default_factory=list)
     v_pre: list[torch.Tensor] = field(default_factory=list)
     k_post: list[torch.Tensor] = field(default_factory=list)
     v_post: list[torch.Tensor] = field(default_factory=list)
     _hook_handles: list[Any] = field(default_factory=list)
-    # Tracks last-seen cache seq-length per layer (HF layout: seq at dim -2).
-    # Used to capture ONLY the new positions added in this call — keeps
-    # K_pre clean (un-quantized) per AR step.
-    _prev_cache_sizes: dict[int, int] = field(default_factory=dict)
+    _patched_caches: list[Any] = field(default_factory=list)
 
     def remove(self) -> None:
         for h in self._hook_handles:
             h.remove()
         self._hook_handles.clear()
+        # Восстановить оригинальный update на запатченных классах cache.
+        # Patching на КЛАССЕ (не на instance), потому что некоторые места
+        # в transformers вызывают update через class-level access
+        # (Cls.update(self, ...)), что обходит instance-attribute patch.
+        for cache_cls in self._patched_caches:
+            if hasattr(cache_cls, "_kv_capture_original_update"):
+                cache_cls.update = cache_cls._kv_capture_original_update
+                delattr(cache_cls, "_kv_capture_original_update")
+                delattr(cache_cls, "_kv_capture_patched")
+        self._patched_caches.clear()
 
 
 def install_capture_hooks(
@@ -38,41 +55,41 @@ def install_capture_hooks(
     attention_modules: list[nn.Module],
     quant_fn: Callable[[torch.Tensor], torch.Tensor],
 ) -> CaptureHandle:
-    """Установить forward hooks на каждый attention-блок + q_proj.
-
-    Стратегия:
-      - Forward-hook на attention block: захватывает K/V из past_key_value
-        и подменяет на quant-версию
-      - Forward-hook на module.q_proj (если есть): захватывает Q post-projection
-      - Если q_proj нет (наша FakeAttention из Task 5): берёт Q из
-        outputs[1] tuple
-    """
+    """Установить хуки для захвата Q/K/V/quantized-K/V с реальным quant в forward."""
     handle = CaptureHandle()
-    # Append mode: lists grow with each hook invocation.
-    # For a single forward pass with N layers, each list ends up with N entries
-    # (one per layer) — same indexing as before.
-    # For AR multi-step generation, lists grow by N per step, and
-    # handle.q[i::n_layers] gives all captures for layer i across steps.
 
-    def _make_q_hook():
+    def _make_q_proj_hook():
         def _hook(module, inputs, output):
-            # output of q_proj is [bsz, seq, hidden] — захватываем как есть
             handle.q.append(output.detach().clone())
         return _hook
 
-    def _make_attn_hook(layer_idx: int):
-        def _hook(module, inputs, kwargs, outputs):
-            # past_key_value приходит как kwarg в HF Qwen3 и в FakeAttention/
-            # FakeHFAttention. Fallback на inputs[1] — для позиционного вызова.
-            pkv = (
-                kwargs.get("past_key_value")
-                or kwargs.get("past_key_values")
-                or (inputs[1] if len(inputs) > 1 else None)
-            )
+    def _make_pre_hook(layer_idx: int):
+        """Pre-hook on attention block: install monkey-patch on cache CLASS.
 
-            # Q-extraction from outputs[1] tuple — для FakeAttention path.
-            # Если q_proj hook уже захватил Q для этого call'а
-            # (len(handle.q) > len(handle.k_pre)), не дублируем.
+        Critical: использовать `is None`, не `or`-fallback, потому что
+        DynamicCache.__len__() == 0 для пустого кэша → cache truthy-check
+        возвращает False даже когда cache существует. Это пропускает
+        первый слой (cache пуст до его cache.update).
+        """
+        def _pre_hook(module, args, kwargs):
+            pkv = kwargs.get("past_key_value")
+            if pkv is None:
+                pkv = kwargs.get("past_key_values")
+            if pkv is None and len(args) > 1:
+                pkv = args[1]
+            if pkv is None:
+                return None
+            cache_cls = type(pkv)
+            if getattr(cache_cls, "_kv_capture_patched", False):
+                return None  # класс уже запатчен
+            _patch_cache_update(cache_cls, quant_fn, handle)
+            handle._patched_caches.append(cache_cls)
+            return None
+        return _pre_hook
+
+    def _make_outputs_q_hook():
+        """Post-hook fallback: захватить Q из outputs[1] tuple для FakeAttention."""
+        def _hook(module, inputs, outputs):
             if (
                 isinstance(outputs, tuple)
                 and len(outputs) == 2
@@ -80,56 +97,56 @@ def install_capture_hooks(
                 and len(outputs[1]) == 3
             ):
                 q_tup = outputs[1][0]
+                # Если q_proj хук уже захватил Q (len(handle.q) > len(handle.k_pre)),
+                # не дублируем
                 if len(handle.q) <= len(handle.k_pre):
                     handle.q.append(q_tup.detach().clone())
-
-            if pkv is None or not hasattr(pkv, "key_cache") or layer_idx >= len(pkv.key_cache):
-                # Нет cache → soft-skip K/V если Q уже захвачен (Q-only scenario).
-                if len(handle.q) > len(handle.k_pre):
-                    return
-                raise RuntimeError(
-                    f"Layer {layer_idx}: no Q/K/V source. "
-                    f"output type={type(outputs)}, pkv={pkv}"
-                )
-
-            # HF cache layout: [B, num_kv_heads, seq, head_dim] — seq at dim -2.
-            # Захватываем ТОЛЬКО новые позиции этого call'а, чтобы K_pre
-            # для старых позиций оставался чистым bf16 (не переквантованным).
-            k_cache = pkv.key_cache[layer_idx]
-            v_cache = pkv.value_cache[layer_idx]
-            current_seq = k_cache.shape[-2]
-            prev_seq = handle._prev_cache_sizes.get(layer_idx, 0)
-
-            if current_seq <= prev_seq:
-                # Странно — cache не вырос. Пропускаем, чтобы не падать на assertion.
-                return
-
-            # Slice new positions: [..., prev_seq:current_seq, :]
-            k_pre_new = k_cache[..., prev_seq:current_seq, :].detach().clone()
-            v_pre_new = v_cache[..., prev_seq:current_seq, :].detach().clone()
-            handle.k_pre.append(k_pre_new)
-            handle.v_pre.append(v_pre_new)
-
-            k_q = quant_fn(k_pre_new)
-            v_q = quant_fn(v_pre_new)
-            handle.k_post.append(k_q.detach().clone())
-            handle.v_post.append(v_q.detach().clone())
-
-            # Write quantized values BACK to cache, ONLY at the new positions.
-            # Старые позиции уже квантованы предыдущими вызовами, не трогаем.
-            k_cache[..., prev_seq:current_seq, :] = k_q
-            v_cache[..., prev_seq:current_seq, :] = v_q
-
-            handle._prev_cache_sizes[layer_idx] = current_seq
-
         return _hook
 
     for layer_idx, mod in enumerate(attention_modules):
         if hasattr(mod, "q_proj"):
-            h = mod.q_proj.register_forward_hook(_make_q_hook())
-            handle._hook_handles.append(h)
-        # with_kwargs=True needed to capture `past_key_value` (HF passes it as kwarg).
-        h = mod.register_forward_hook(_make_attn_hook(layer_idx), with_kwargs=True)
-        handle._hook_handles.append(h)
+            h_q = mod.q_proj.register_forward_hook(_make_q_proj_hook())
+            handle._hook_handles.append(h_q)
+        h_pre = mod.register_forward_pre_hook(
+            _make_pre_hook(layer_idx), with_kwargs=True
+        )
+        handle._hook_handles.append(h_pre)
+        h_post = mod.register_forward_hook(_make_outputs_q_hook())
+        handle._hook_handles.append(h_post)
 
     return handle
+
+
+def _patch_cache_update(cache_cls: type, quant_fn: Callable, handle: CaptureHandle) -> None:
+    """Заменить cache_cls.update (метод КЛАССА) на квантующую версию.
+
+    Class-level patch нужен потому что некоторые места в transformers вызывают
+    `Cls.update(self, ...)` напрямую — это обходит instance-attribute patching.
+
+    Эффект: attention.forward вызывает self.past_key_value.update(K, V) →
+    наш патч сохраняет K_pre, квантует, сохраняет K_post, и передаёт
+    квантованные K_q, V_q в оригинальный update. Cache хранит K_q,
+    attention читает K_q, логиты получаются quant-quality.
+
+    Restoration: handle.remove() возвращает оригинальный update класса.
+    Идемпотентность: повторный patch при уже запатченном классе — no-op.
+    """
+    original_update = cache_cls.update
+
+    def quantized_update(self, key_states, value_states, layer_idx, cache_kwargs=None):
+        # K/V pre-quant — снимок до любого преобразования
+        handle.k_pre.append(key_states.detach().clone())
+        handle.v_pre.append(value_states.detach().clone())
+
+        # Квантуем
+        k_q = quant_fn(key_states)
+        v_q = quant_fn(value_states)
+        handle.k_post.append(k_q.detach().clone())
+        handle.v_post.append(v_q.detach().clone())
+
+        # В cache летит quantized — attention увидит K_q
+        return original_update(self, k_q, v_q, layer_idx, cache_kwargs)
+
+    cache_cls.update = quantized_update
+    cache_cls._kv_capture_patched = True
+    cache_cls._kv_capture_original_update = original_update
