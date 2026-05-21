@@ -22,7 +22,7 @@ class _ARCache:
             self.key_cache.append(key_states)
             self.value_cache.append(value_states)
         else:
-            seq_dim = 1  # tensors are [B, seq, heads, dim]
+            seq_dim = 2  # HF Qwen3 layout: [B, num_heads, seq, head_dim]
             self.key_cache[layer_idx] = torch.cat(
                 [self.key_cache[layer_idx], key_states], dim=seq_dim
             )

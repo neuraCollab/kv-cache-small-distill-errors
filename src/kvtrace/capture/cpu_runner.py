@@ -246,31 +246,20 @@ def _slice_seq_dim(t: torch.Tensor | None, ws: int, we: int) -> torch.Tensor:
 def _concat_seq(tensor_list: list[torch.Tensor]) -> torch.Tensor:
     """Concat per-call captures along seq dim.
 
-    Two patterns occur in AR mode:
-      - Q (from q_proj hook): each call captures only the NEW tokens'
-        Q-projection, shape [B=1, new_seq, hidden] per call. These
-        concatenate along seq dim cleanly.
-      - K/V (from past_key_value.key_cache[layer_idx]): each call sees
-        the CUMULATIVE cache, shape [B=1, num_kv_heads, growing_seq, head_dim].
-        These cannot be concatenated — they overlap. Take the last
-        (final state contains all positions).
+    Both Q ([B, seq, hidden]) and K/V ([B, num_kv_heads, seq, head_dim])
+    have seq at dim=-2, so torch.cat(dim=-2) handles both uniformly.
 
-    Heuristic: try to concat. If shape mismatch raises (cumulative case),
-    return the largest tensor (= last in AR's monotonically growing cache).
+    After the AR hook fix (capture only new positions per call), tensors
+    in the list are non-overlapping slices that compose into the full
+    sequence — no more cumulative-cache shape mismatches.
     """
     if not tensor_list:
         return torch.empty(0)
-    squeezed = []
-    for t in tensor_list:
-        # Squeeze leading batch dim of size 1 to get [seq, ...] or [num_kv_heads, seq, ...]
-        if t.dim() >= 2 and t.shape[0] == 1:
-            t = t[0]
-        squeezed.append(t)
     try:
-        return torch.cat(squeezed, dim=0)
+        return torch.cat(tensor_list, dim=-2)
     except RuntimeError:
-        # Cumulative cache state — return the largest (last) which contains all positions.
-        return max(squeezed, key=lambda t: t.numel())
+        # Legacy fallback for shape mismatches: pick largest.
+        return max(tensor_list, key=lambda t: t.numel())
 
 
 def _build_capture(

@@ -22,6 +22,10 @@ class CaptureHandle:
     k_post: list[torch.Tensor] = field(default_factory=list)
     v_post: list[torch.Tensor] = field(default_factory=list)
     _hook_handles: list[Any] = field(default_factory=list)
+    # Tracks last-seen cache seq-length per layer (HF layout: seq at dim -2).
+    # Used to capture ONLY the new positions added in this call — keeps
+    # K_pre clean (un-quantized) per AR step.
+    _prev_cache_sizes: dict[int, int] = field(default_factory=dict)
 
     def remove(self) -> None:
         for h in self._hook_handles:
@@ -58,35 +62,29 @@ def install_capture_hooks(
 
     def _make_attn_hook(layer_idx: int):
         def _hook(module, inputs, kwargs, outputs):
-            # past_key_value передаётся как kwarg в HF Qwen3 и в FakeAttention/
-            # FakeHFAttention. Fallback на inputs[1] — для случая, если кто-то
-            # вызвал layer(hidden_states, cache) позиционно.
+            # past_key_value приходит как kwarg в HF Qwen3 и в FakeAttention/
+            # FakeHFAttention. Fallback на inputs[1] — для позиционного вызова.
             pkv = (
                 kwargs.get("past_key_value")
                 or kwargs.get("past_key_values")
                 or (inputs[1] if len(inputs) > 1 else None)
             )
-            from_outputs = False
 
+            # Q-extraction from outputs[1] tuple — для FakeAttention path.
+            # Если q_proj hook уже захватил Q для этого call'а
+            # (len(handle.q) > len(handle.k_pre)), не дублируем.
             if (
                 isinstance(outputs, tuple)
                 and len(outputs) == 2
                 and isinstance(outputs[1], tuple)
                 and len(outputs[1]) == 3
             ):
-                q_tup, k_src, v_src = outputs[1]
-                # Only append Q if q_proj hook hasn't already done so for this call.
-                # In append mode: q_proj appended Q before attn hook fires,
-                # so len(handle.q) > len(handle.k_pre) means Q is already captured.
+                q_tup = outputs[1][0]
                 if len(handle.q) <= len(handle.k_pre):
                     handle.q.append(q_tup.detach().clone())
-                from_outputs = True
-            elif pkv is not None and hasattr(pkv, "key_cache") and layer_idx < len(pkv.key_cache):
-                k_src = pkv.key_cache[layer_idx]
-                v_src = pkv.value_cache[layer_idx]
-            else:
-                # No K/V source found. If Q was already captured via q_proj hook
-                # for this call, skip K/V capture silently (Q-only scenario).
+
+            if pkv is None or not hasattr(pkv, "key_cache") or layer_idx >= len(pkv.key_cache):
+                # Нет cache → soft-skip K/V если Q уже захвачен (Q-only scenario).
                 if len(handle.q) > len(handle.k_pre):
                     return
                 raise RuntimeError(
@@ -94,24 +92,35 @@ def install_capture_hooks(
                     f"output type={type(outputs)}, pkv={pkv}"
                 )
 
-            handle.k_pre.append(k_src.detach().clone())
-            handle.v_pre.append(v_src.detach().clone())
+            # HF cache layout: [B, num_kv_heads, seq, head_dim] — seq at dim -2.
+            # Захватываем ТОЛЬКО новые позиции этого call'а, чтобы K_pre
+            # для старых позиций оставался чистым bf16 (не переквантованным).
+            k_cache = pkv.key_cache[layer_idx]
+            v_cache = pkv.value_cache[layer_idx]
+            current_seq = k_cache.shape[-2]
+            prev_seq = handle._prev_cache_sizes.get(layer_idx, 0)
 
-            k_q = quant_fn(k_src)
-            v_q = quant_fn(v_src)
+            if current_seq <= prev_seq:
+                # Странно — cache не вырос. Пропускаем, чтобы не падать на assertion.
+                return
+
+            # Slice new positions: [..., prev_seq:current_seq, :]
+            k_pre_new = k_cache[..., prev_seq:current_seq, :].detach().clone()
+            v_pre_new = v_cache[..., prev_seq:current_seq, :].detach().clone()
+            handle.k_pre.append(k_pre_new)
+            handle.v_pre.append(v_pre_new)
+
+            k_q = quant_fn(k_pre_new)
+            v_q = quant_fn(v_pre_new)
             handle.k_post.append(k_q.detach().clone())
             handle.v_post.append(v_q.detach().clone())
 
-            # Replace cache entries.
-            # When k/v came from outputs tuple, k IS cache.key_cache[layer_idx]
-            # (same object returned by cache.update). Mutate in-place so the
-            # cache sees quantized values without needing a pkv reference.
-            if from_outputs:
-                k_src.copy_(k_q)
-                v_src.copy_(v_q)
-            elif pkv is not None and hasattr(pkv, "key_cache") and layer_idx < len(pkv.key_cache):
-                pkv.key_cache[layer_idx] = k_q
-                pkv.value_cache[layer_idx] = v_q
+            # Write quantized values BACK to cache, ONLY at the new positions.
+            # Старые позиции уже квантованы предыдущими вызовами, не трогаем.
+            k_cache[..., prev_seq:current_seq, :] = k_q
+            v_cache[..., prev_seq:current_seq, :] = v_q
+
+            handle._prev_cache_sizes[layer_idx] = current_seq
 
         return _hook
 

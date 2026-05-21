@@ -35,15 +35,19 @@ class _FakeAttention(nn.Module):
         self.layer_idx = layer_idx
 
     def forward(self, hidden_states, past_key_value=None):
-        # Игрушечные Q/K/V — три проекции = identity для простоты
+        # Игрушечные Q/K/V — три проекции = identity для простоты.
+        # K/V в HF Qwen3 layout: [B, num_heads, seq, head_dim] (seq at dim -2).
+        # Q остаётся в [B, seq, num_heads, head_dim] — после q_proj, до transpose.
         bsz, seq, dim = hidden_states.shape
         q = hidden_states.view(bsz, seq, 1, dim).contiguous()
-        k = hidden_states.view(bsz, seq, 1, dim).contiguous() * 1.5
-        v = hidden_states.view(bsz, seq, 1, dim).contiguous() * 2.0
+        k = hidden_states.view(bsz, 1, seq, dim).contiguous() * 1.5  # HF layout
+        v = hidden_states.view(bsz, 1, seq, dim).contiguous() * 2.0  # HF layout
         if past_key_value is not None:
             k, v = past_key_value.update(k, v, self.layer_idx)
-        # attention_output (нам не важно для теста)
-        out = (q * k * v).sum(dim=-2)
+        # Dummy attention output — реальная attention-математика не нужна для
+        # теста хуков; multiplying q*k*v fails when cache grows in AR mode
+        # (sizes mismatch). Просто возвращаем hidden_states как заглушку.
+        out = hidden_states
         return out, (q, k, v)
 
 
@@ -123,14 +127,13 @@ class _FakeHFAttention(nn.Module):
         q = self.q_proj(hidden_states)
         k = self.k_proj(hidden_states)
         v = self.v_proj(hidden_states)
-        # Reshape to [bsz, seq, n_heads=1, head_dim] for cache
+        # HF Qwen3 K/V layout: [B, num_heads, seq, head_dim] (seq at dim -2).
         bsz, seq, dim = q.shape
         q = q.view(bsz, seq, 1, dim)
-        k = k.view(bsz, seq, 1, dim)
-        v = v.view(bsz, seq, 1, dim)
+        k = k.view(bsz, 1, seq, dim)
+        v = v.view(bsz, 1, seq, dim)
         if past_key_value is not None:
             k, v = past_key_value.update(k, v, self.layer_idx)
-        # Возвращаем attn_output + None (как HF при output_attentions=False)
         return (q.sum(-2), None)
 
 
