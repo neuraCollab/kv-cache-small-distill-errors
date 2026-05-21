@@ -79,10 +79,26 @@ def main() -> int:
             for r in _load_jsonl(fdp_path)
             if r.get("fdp_token_idx") is not None
         }
-    # bf16 uses fp8_e4m3 FDPs as reference coordinate
+    # bf16 не имеет собственного FDP (расхождения только относительно квантов),
+    # поэтому заимствует FDP-координаты от fp8_e4m3 как референс. Если других
+    # квантов в этом ране нет (например --smoke с только bf16), грузим
+    # fp8_e4m3 FDP-файл специально для этой цели.
     if "bf16" in args.quants:
-        ref_quant = "fp8_e4m3" if "fp8_e4m3" in fdp_by_quant else next(iter(fdp_by_quant))
-        fdp_by_quant["bf16"] = fdp_by_quant[ref_quant]
+        if "fp8_e4m3" in fdp_by_quant:
+            fdp_by_quant["bf16"] = fdp_by_quant["fp8_e4m3"]
+        elif fdp_by_quant:
+            fdp_by_quant["bf16"] = next(iter(fdp_by_quant.values()))
+        else:
+            # bf16-only ран — подгружаем fp8_e4m3 FDP как координатный референс
+            ref_path = args.fdps_dir / f"{args.model}_fp8_e4m3.jsonl"
+            if not ref_path.exists():
+                log.error("bf16-only run requires fp8_e4m3 FDP file as reference: %s", ref_path)
+                return 2
+            fdp_by_quant["bf16"] = {
+                r["problem_idx"]: r["fdp_token_idx"]
+                for r in _load_jsonl(ref_path)
+                if r.get("fdp_token_idx") is not None
+            }
 
     if args.problems == "all":
         problem_ids = sorted({t["idx"] for t in bf16_traces})

@@ -82,11 +82,11 @@ class CaptureRunner:
             logits_full = out.logits[0]  # [we, vocab]
 
             ws, we = window.ws, window.we
-            q_sliced = [_slice_seq_dim(t, ws, we) for t in handle.q]
-            k_pre_sliced = [_slice_seq_dim(t, ws, we) for t in handle.k_pre]
-            v_pre_sliced = [_slice_seq_dim(t, ws, we) for t in handle.v_pre]
-            k_post_sliced = [_slice_seq_dim(t, ws, we) for t in handle.k_post]
-            v_post_sliced = [_slice_seq_dim(t, ws, we) for t in handle.v_post]
+            q_sliced = [_slice_q(t, ws, we) for t in handle.q]
+            k_pre_sliced = [_slice_kv(t, ws, we) for t in handle.k_pre]
+            v_pre_sliced = [_slice_kv(t, ws, we) for t in handle.v_pre]
+            k_post_sliced = [_slice_kv(t, ws, we) for t in handle.k_post]
+            v_post_sliced = [_slice_kv(t, ws, we) for t in handle.v_post]
             logits_sliced = logits_full[ws:we]
 
             return _build_capture(
@@ -161,11 +161,11 @@ class CaptureRunner:
             v_post_all = [_concat_seq(handle.v_post[i::self._n_layers]) for i in range(self._n_layers)]
 
             ws, we = window.ws, window.we
-            q_sliced = [_slice_seq_dim(t, ws, we) for t in q_all]
-            k_pre_sliced = [_slice_seq_dim(t, ws, we) for t in k_pre_all]
-            v_pre_sliced = [_slice_seq_dim(t, ws, we) for t in v_pre_all]
-            k_post_sliced = [_slice_seq_dim(t, ws, we) for t in k_post_all]
-            v_post_sliced = [_slice_seq_dim(t, ws, we) for t in v_post_all]
+            q_sliced = [_slice_q(t, ws, we) for t in q_all]
+            k_pre_sliced = [_slice_kv(t, ws, we) for t in k_pre_all]
+            v_pre_sliced = [_slice_kv(t, ws, we) for t in v_pre_all]
+            k_post_sliced = [_slice_kv(t, ws, we) for t in k_post_all]
+            v_post_sliced = [_slice_kv(t, ws, we) for t in v_post_all]
 
             # Logits: only generated positions are available from generate().
             # Fill prefix positions with zeros; concat with actual generated logits.
@@ -195,12 +195,48 @@ class CaptureRunner:
             handle.remove()
 
 
-def _slice_seq_dim(t: torch.Tensor | None, ws: int, we: int) -> torch.Tensor:
-    """Slice seq dimension regardless of [B, seq, ...] or [seq, ...] shape."""
+def _slice_q(t: torch.Tensor | None, ws: int, we: int) -> torch.Tensor:
+    """Q layout: [B=1, seq, hidden] (from q_proj) or [seq, hidden] (after AR concat).
+
+    Returns [W, hidden]. User can reshape to [W, num_heads, head_dim] offline.
+    Note: Q is captured pre-RoPE (q_proj output); reshape correctness depends on
+    that interpretation.
+    """
     if t is None:
         return torch.empty(0, dtype=torch.float16)
+    if t.dim() == 3 and t.shape[0] == 1:
+        return t[0, ws:we].to(torch.float16).contiguous()
+    if t.dim() == 2:
+        return t[ws:we].to(torch.float16).contiguous()
+    return t
+
+
+def _slice_kv(t: torch.Tensor | None, ws: int, we: int) -> torch.Tensor:
+    """K/V layout: [B=1, num_kv_heads, seq, head_dim] (TF) or
+    [num_kv_heads, seq, head_dim] (AR after _concat_seq took last).
+
+    Returns [W, num_kv_heads, head_dim] — seq becomes dim 0 to match Q convention
+    and match the spec layout.
+    """
+    if t is None:
+        return torch.empty(0, dtype=torch.float16)
+    if t.dim() == 4 and t.shape[0] == 1:
+        return t[0, :, ws:we, :].permute(1, 0, 2).to(torch.float16).contiguous()
+    if t.dim() == 3:
+        return t[:, ws:we, :].permute(1, 0, 2).to(torch.float16).contiguous()
+    return t
+
+
+def _slice_seq_dim(t: torch.Tensor | None, ws: int, we: int) -> torch.Tensor:
+    """DEPRECATED: kept for backwards-compat. Use _slice_q or _slice_kv directly.
+
+    Heuristic: 4D → K/V layout; 3D with batch=1 → Q layout.
+    """
+    if t is None:
+        return torch.empty(0, dtype=torch.float16)
+    if t.dim() == 4:
+        return _slice_kv(t, ws, we)
     if t.dim() >= 3 and t.shape[0] == 1:
-        # [B=1, seq, ...] → squeeze B then slice
         return t[0, ws:we].to(torch.float16).contiguous()
     if t.dim() >= 2:
         return t[ws:we].to(torch.float16).contiguous()
