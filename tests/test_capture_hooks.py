@@ -108,3 +108,54 @@ def test_remove_hooks_stops_capturing():
     # После remove повторный forward не должен накопить ничего нового
     model(x, past_key_value=cache)
     assert len(handle.q) == 1
+
+
+class _FakeHFAttention(nn.Module):
+    """Имитирует HF Qwen3Attention: имеет .q_proj и кладёт K/V в кеш."""
+    def __init__(self, layer_idx: int, dim: int = 8):
+        super().__init__()
+        self.layer_idx = layer_idx
+        self.q_proj = nn.Linear(dim, dim, bias=False)
+        self.k_proj = nn.Linear(dim, dim, bias=False)
+        self.v_proj = nn.Linear(dim, dim, bias=False)
+
+    def forward(self, hidden_states, past_key_value=None):
+        q = self.q_proj(hidden_states)
+        k = self.k_proj(hidden_states)
+        v = self.v_proj(hidden_states)
+        # Reshape to [bsz, seq, n_heads=1, head_dim] for cache
+        bsz, seq, dim = q.shape
+        q = q.view(bsz, seq, 1, dim)
+        k = k.view(bsz, seq, 1, dim)
+        v = v.view(bsz, seq, 1, dim)
+        if past_key_value is not None:
+            k, v = past_key_value.update(k, v, self.layer_idx)
+        # Возвращаем attn_output + None (как HF при output_attentions=False)
+        return (q.sum(-2), None)
+
+
+class _FakeHFModel(nn.Module):
+    def __init__(self, n_layers: int = 1, dim: int = 8):
+        super().__init__()
+        self.layers = nn.ModuleList([_FakeHFAttention(i, dim) for i in range(n_layers)])
+
+    def forward(self, hidden_states, past_key_value=None):
+        for layer in self.layers:
+            hidden_states, _ = layer(hidden_states, past_key_value=past_key_value)
+        return hidden_states
+
+
+def test_hook_captures_q_via_q_proj_on_hf_style_attention():
+    model = _FakeHFModel(n_layers=1, dim=8)
+    handle = install_capture_hooks(
+        model,
+        attention_modules=list(model.layers),
+        quant_fn=lambda x: x,
+    )
+    cache = _FakeCache()
+    x = torch.randn(1, 3, 8, dtype=torch.float32)
+    model(x, past_key_value=cache)
+
+    # Q должно быть захвачено через хук на q_proj
+    assert len(handle.q) == 1
+    assert handle.q[0].shape == (1, 3, 8)  # output q_proj без reshape

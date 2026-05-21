@@ -34,67 +34,84 @@ def install_capture_hooks(
     attention_modules: list[nn.Module],
     quant_fn: Callable[[torch.Tensor], torch.Tensor],
 ) -> CaptureHandle:
-    """Установить forward hooks на каждый attention-блок.
+    """Установить forward hooks на каждый attention-блок + q_proj.
 
-    Hook берёт outputs = (attn_output, (q, k, v)) из attention forward и:
-      - пишет q, k, v в CaptureHandle как pre-quant
-      - вычисляет k_post = quant_fn(k), v_post = quant_fn(v)
-      - подменяет K/V в кеше (если кеш был передан) на quant-версию
-
-    Note: для HF Qwen3 attention.forward возвращает (attn_output, attn_weights);
-    K/V кладутся в cache через past_key_value.update(...) внутри forward.
-    Мы вытаскиваем K/V из кеша после forward и квантуем их там же.
+    Стратегия:
+      - Forward-hook на attention block: захватывает K/V из past_key_value
+        и подменяет на quant-версию
+      - Forward-hook на module.q_proj (если есть): захватывает Q post-projection
+      - Если q_proj нет (наша FakeAttention из Task 5): берёт Q из
+        outputs[1] tuple
     """
     handle = CaptureHandle()
+    # Pre-allocate slots per layer so order is deterministic
+    n_layers = len(attention_modules)
+    handle.q = [None] * n_layers  # type: ignore[list-item]
+    handle.k_pre = [None] * n_layers  # type: ignore[list-item]
+    handle.v_pre = [None] * n_layers  # type: ignore[list-item]
+    handle.k_post = [None] * n_layers  # type: ignore[list-item]
+    handle.v_post = [None] * n_layers  # type: ignore[list-item]
 
-    def _make_hook(layer_idx: int):
+    def _make_q_hook(layer_idx: int):
+        def _hook(module, inputs, output):
+            # output of q_proj is [bsz, seq, hidden] — захватываем как есть
+            handle.q[layer_idx] = output.detach().clone()
+        return _hook
+
+    def _make_attn_hook(layer_idx: int):
         def _hook(module, inputs, outputs):
-            # outputs format depends on attention class.
-            # Our FakeAttention returns (attn_out, (q, k, v)).
-            # HF Qwen3Attention returns (attn_out, attn_weights) but K/V are
-            # in past_key_value at module.layer_idx.
+            pkv = inputs[1] if len(inputs) > 1 else None
             from_outputs = False
-            if isinstance(outputs, tuple) and len(outputs) == 2 and isinstance(outputs[1], tuple):
-                _, (q, k, v) = outputs
+
+            if (
+                isinstance(outputs, tuple)
+                and len(outputs) == 2
+                and isinstance(outputs[1], tuple)
+                and len(outputs[1]) == 3
+            ):
+                q_tup, k_src, v_src = outputs[1]
+                if handle.q[layer_idx] is None:
+                    handle.q[layer_idx] = q_tup.detach().clone()
                 from_outputs = True
+            elif pkv is not None and hasattr(pkv, "key_cache"):
+                k_src = pkv.key_cache[layer_idx]
+                v_src = pkv.value_cache[layer_idx]
             else:
-                # HF path — pull from cache (passed via kwargs)
-                pkv = inputs[1] if len(inputs) > 1 else None
-                if pkv is None or not hasattr(pkv, "key_cache"):
-                    raise RuntimeError(
-                        f"Layer {layer_idx}: cannot locate Q/K/V. "
-                        f"Output type {type(outputs)}, no usable past_key_value."
-                    )
-                k = pkv.key_cache[layer_idx]
-                v = pkv.value_cache[layer_idx]
-                q = None  # placeholder for HF path; q_proj hook добавляется в Task 6
+                # No K/V source found. If Q was already captured via q_proj hook,
+                # skip K/V capture silently (Q-only scenario).
+                if handle.q[layer_idx] is not None:
+                    return
+                raise RuntimeError(
+                    f"Layer {layer_idx}: no Q/K/V source. "
+                    f"output type={type(outputs)}, pkv={pkv}"
+                )
 
-            handle.q.append(q if q is not None else torch.empty(0))
-            handle.k_pre.append(k.detach().clone())
-            handle.v_pre.append(v.detach().clone())
+            handle.k_pre[layer_idx] = k_src.detach().clone()
+            handle.v_pre[layer_idx] = v_src.detach().clone()
 
-            k_q = quant_fn(k)
-            v_q = quant_fn(v)
-            handle.k_post.append(k_q.detach().clone())
-            handle.v_post.append(v_q.detach().clone())
+            k_q = quant_fn(k_src)
+            v_q = quant_fn(v_src)
+            handle.k_post[layer_idx] = k_q.detach().clone()
+            handle.v_post[layer_idx] = v_q.detach().clone()
 
-            # Replace cache entries in-place.
+            # Replace cache entries.
             # When k/v came from outputs tuple, k IS cache.key_cache[layer_idx]
             # (same object returned by cache.update). Mutate in-place so the
             # cache sees quantized values without needing a pkv reference.
             if from_outputs:
-                k.copy_(k_q)
-                v.copy_(v_q)
-            else:
-                pkv = inputs[1] if len(inputs) > 1 else None
-                if pkv is not None and hasattr(pkv, "key_cache") and layer_idx < len(pkv.key_cache):
-                    pkv.key_cache[layer_idx] = k_q
-                    pkv.value_cache[layer_idx] = v_q
+                k_src.copy_(k_q)
+                v_src.copy_(v_q)
+            elif pkv is not None and hasattr(pkv, "key_cache") and layer_idx < len(pkv.key_cache):
+                pkv.key_cache[layer_idx] = k_q
+                pkv.value_cache[layer_idx] = v_q
 
         return _hook
 
     for layer_idx, mod in enumerate(attention_modules):
-        h = mod.register_forward_hook(_make_hook(layer_idx))
+        if hasattr(mod, "q_proj"):
+            h = mod.q_proj.register_forward_hook(_make_q_hook(layer_idx))
+            handle._hook_handles.append(h)
+        h = mod.register_forward_hook(_make_attn_hook(layer_idx))
         handle._hook_handles.append(h)
 
     return handle
