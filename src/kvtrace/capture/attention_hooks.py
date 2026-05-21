@@ -57,8 +57,15 @@ def install_capture_hooks(
         return _hook
 
     def _make_attn_hook(layer_idx: int):
-        def _hook(module, inputs, outputs):
-            pkv = inputs[1] if len(inputs) > 1 else None
+        def _hook(module, inputs, kwargs, outputs):
+            # past_key_value передаётся как kwarg в HF Qwen3 и в FakeAttention/
+            # FakeHFAttention. Fallback на inputs[1] — для случая, если кто-то
+            # вызвал layer(hidden_states, cache) позиционно.
+            pkv = (
+                kwargs.get("past_key_value")
+                or kwargs.get("past_key_values")
+                or (inputs[1] if len(inputs) > 1 else None)
+            )
             from_outputs = False
 
             if (
@@ -74,7 +81,7 @@ def install_capture_hooks(
                 if len(handle.q) <= len(handle.k_pre):
                     handle.q.append(q_tup.detach().clone())
                 from_outputs = True
-            elif pkv is not None and hasattr(pkv, "key_cache"):
+            elif pkv is not None and hasattr(pkv, "key_cache") and layer_idx < len(pkv.key_cache):
                 k_src = pkv.key_cache[layer_idx]
                 v_src = pkv.value_cache[layer_idx]
             else:
@@ -112,7 +119,8 @@ def install_capture_hooks(
         if hasattr(mod, "q_proj"):
             h = mod.q_proj.register_forward_hook(_make_q_hook())
             handle._hook_handles.append(h)
-        h = mod.register_forward_hook(_make_attn_hook(layer_idx))
+        # with_kwargs=True needed to capture `past_key_value` (HF passes it as kwarg).
+        h = mod.register_forward_hook(_make_attn_hook(layer_idx), with_kwargs=True)
         handle._hook_handles.append(h)
 
     return handle
