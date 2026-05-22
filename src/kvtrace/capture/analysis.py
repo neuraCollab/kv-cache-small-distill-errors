@@ -151,6 +151,109 @@ def captures_share_window(cap_a: CaptureData, cap_b: CaptureData) -> bool:
     )
 
 
+def logit_kl_trajectory(cap_a: CaptureData, cap_b: CaptureData) -> torch.Tensor:
+    """KL(p_a || p_b) at every position in the (shared) window.
+
+    Возвращает Tensor[W] где [i] = KL дивергенция логит-распределений
+    в позиции window_start+i. Растущий KL вдоль траектории — прямое
+    свидетельство накопления квант-шума через слои.
+
+    Требует одинакового окна. Иначе ValueError.
+    """
+    if not captures_share_window(cap_a, cap_b):
+        raise ValueError(
+            f"Captures have different windows: "
+            f"{cap_a.meta['window_start']}-{cap_a.meta['window_end']} vs "
+            f"{cap_b.meta['window_start']}-{cap_b.meta['window_end']}"
+        )
+    log_a = cap_a.logits.float()  # [W, vocab]
+    log_b = cap_b.logits.float()
+    p_a = torch.softmax(log_a, dim=-1)
+    p_b = torch.softmax(log_b, dim=-1)
+    eps = 1e-12
+    # KL per position: Σ p_a * log(p_a / p_b)
+    kl = (p_a * (torch.log(p_a + eps) - torch.log(p_b + eps))).sum(dim=-1)
+    return kl  # [W]
+
+
+def bf16_margin_trajectory(cap_bf16: CaptureData) -> torch.Tensor:
+    """Margin (top-1 logit - top-2 logit) at every position.
+
+    Малый margin → модель не уверена в выборе токена → лёгко перекинуть
+    argmax квант-шумом. Большой margin → робастность к шуму.
+
+    Возвращает Tensor[W].
+    """
+    logits = cap_bf16.logits.float()  # [W, vocab]
+    top2 = logits.topk(2, dim=-1).values  # [W, 2]
+    return (top2[:, 0] - top2[:, 1])  # [W]
+
+
+def per_position_kv_quant_noise(cap: CaptureData) -> dict[str, torch.Tensor]:
+    """Per-(layer, position) относительная L2-норма квант-шума ΔK, ΔV.
+
+    Для каждого слоя ℓ и позиции t:
+        k_noise[ℓ, t] = ||K_post[t, :, :] - K_pre[t, :, :]||_2 / (||K_pre[t, :, :]||_2 + eps)
+
+    Возвращает {"k_noise": [n_layers, W], "v_noise": [n_layers, W]}.
+    Для bf16 capture везде нули.
+    """
+    n_layers = len(cap.k_pre)
+    W = cap.k_pre[0].shape[0]
+    eps = 1e-12
+    k_noise = torch.zeros(n_layers, W)
+    v_noise = torch.zeros(n_layers, W)
+    for layer in range(n_layers):
+        kp = cap.k_pre[layer].float()  # [W, num_kv_heads, head_dim]
+        kq = cap.k_post[layer].float()
+        vp = cap.v_pre[layer].float()
+        vq = cap.v_post[layer].float()
+        # L2 norm per position (over heads × dim)
+        kp_norm = kp.flatten(1).norm(dim=1)  # [W]
+        kq_diff = (kq - kp).flatten(1).norm(dim=1)
+        k_noise[layer] = kq_diff / (kp_norm + eps)
+        vp_norm = vp.flatten(1).norm(dim=1)
+        vq_diff = (vq - vp).flatten(1).norm(dim=1)
+        v_noise[layer] = vq_diff / (vp_norm + eps)
+    return {"k_noise": k_noise, "v_noise": v_noise}
+
+
+def top_outlier_channels(
+    cap: CaptureData, threshold: float = 448.0, top_n_per_layer: int = 5
+) -> list[dict]:
+    """Найти каналы (layer, kv_head, head_dim_channel) где |K| или |V| превышает threshold.
+
+    threshold = 448 (e4m3 max) показывает каналы, которые e4m3-квант обрезает.
+    threshold = 57344 (e5m2 max) — то же для e5m2.
+
+    Возвращает list[{layer, kind: 'k'|'v', max_channels: [(head, channel, max_abs)]}].
+    """
+    results = []
+    for layer in range(len(cap.k_pre)):
+        for kind in ("k", "v"):
+            tensor = (cap.k_pre[layer] if kind == "k" else cap.v_pre[layer]).float()
+            # tensor shape: [W, num_kv_heads, head_dim]
+            # max abs per (head, channel): max over W
+            max_per_channel = tensor.abs().amax(dim=0)  # [num_kv_heads, head_dim]
+            num_heads, head_dim = max_per_channel.shape
+            flat = max_per_channel.flatten()
+            n_outliers = int((flat > threshold).sum())
+            # Топ-N каналов по max abs
+            top_vals, top_idx = flat.topk(min(top_n_per_layer, len(flat)))
+            channels = []
+            for v, idx in zip(top_vals.tolist(), top_idx.tolist()):
+                head = idx // head_dim
+                ch = idx % head_dim
+                channels.append({"head": head, "channel": ch, "max_abs": v})
+            results.append({
+                "layer": layer,
+                "kind": kind,
+                "n_channels_above_threshold": n_outliers,
+                "top_channels": channels,
+            })
+    return results
+
+
 def align_captures_by_absolute_position(
     cap_a: CaptureData, cap_b: CaptureData
 ) -> tuple[slice, slice] | None:

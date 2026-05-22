@@ -5,10 +5,14 @@ import torch
 
 from kvtrace.capture.analysis import (
     align_captures_by_absolute_position,
+    bf16_margin_trajectory,
     captures_share_window,
     compute_kv_value_stats_per_layer,
     compute_logits_kl_at_fdp,
     compute_relative_quant_error,
+    logit_kl_trajectory,
+    per_position_kv_quant_noise,
+    top_outlier_channels,
 )
 from kvtrace.capture.storage import CaptureData
 
@@ -121,3 +125,68 @@ def test_align_captures_no_overlap():
     cap_a = _make_cap(W=10, window_start=0)
     cap_b = _make_cap(W=10, window_start=20)
     assert align_captures_by_absolute_position(cap_a, cap_b) is None
+
+
+def test_logit_kl_trajectory_shape_and_zero_for_identical():
+    cap_a = _make_cap(seed=0)
+    cap_b = _make_cap(seed=0)  # identical
+    kl = logit_kl_trajectory(cap_a, cap_b)
+    assert kl.shape == (10,)  # W
+    # Identical logits → KL ≈ 0 (allow tiny float noise)
+    assert kl.abs().max() < 1e-3
+
+
+def test_logit_kl_trajectory_nonzero_for_different():
+    cap_a = _make_cap(seed=0)
+    cap_b = _make_cap(seed=1)
+    kl = logit_kl_trajectory(cap_a, cap_b)
+    assert kl.shape == (10,)
+    assert kl.max() > 0
+
+
+def test_logit_kl_trajectory_raises_on_different_windows():
+    cap_a = _make_cap(window_start=0)
+    cap_b = _make_cap(window_start=100)
+    try:
+        logit_kl_trajectory(cap_a, cap_b)
+        assert False, "should have raised"
+    except ValueError:
+        pass
+
+
+def test_bf16_margin_trajectory():
+    cap = _make_cap(W=10, vocab=32)
+    margin = bf16_margin_trajectory(cap)
+    assert margin.shape == (10,)
+    # Margin = top1 - top2 ≥ 0 always
+    assert (margin >= 0).all()
+
+
+def test_per_position_kv_quant_noise_zero_for_bf16():
+    cap = _make_cap(quant="bf16")
+    noise = per_position_kv_quant_noise(cap)
+    assert noise["k_noise"].shape == (2, 10)  # [n_layers, W]
+    assert noise["v_noise"].shape == (2, 10)
+    assert noise["k_noise"].max() == 0
+    assert noise["v_noise"].max() == 0
+
+
+def test_per_position_kv_quant_noise_nonzero_for_quant():
+    cap = _make_cap(quant="fp8_e4m3")
+    noise = per_position_kv_quant_noise(cap)
+    assert noise["k_noise"].max() > 0
+    assert noise["v_noise"].max() > 0
+
+
+def test_top_outlier_channels_finds_high_values():
+    cap = _make_cap()
+    # Inject extreme values in layer 0, head 0, channel 0
+    cap.k_pre[0][:, 0, 0] = 1000.0
+    out = top_outlier_channels(cap, threshold=448.0, top_n_per_layer=3)
+    # results contains entries per (layer, kind)
+    layer0_k = next(r for r in out if r["layer"] == 0 and r["kind"] == "k")
+    assert layer0_k["n_channels_above_threshold"] >= 1
+    # The injected channel should be top
+    assert layer0_k["top_channels"][0]["head"] == 0
+    assert layer0_k["top_channels"][0]["channel"] == 0
+    assert layer0_k["top_channels"][0]["max_abs"] >= 1000.0
