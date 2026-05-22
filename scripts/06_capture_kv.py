@@ -179,7 +179,10 @@ def main() -> int:
                     quant=quant,
                     problem_id=pid,
                     fdp_token_idx=fdp_idx,
-                    max_new_tokens=args.window_post + 150,
+                    # +1 для inclusive верхней границы окна [FDP-pre, FDP+post]:
+                    # генерируем pre+post+1 токенов чтобы покрыть позиции
+                    # [prefix_len, prefix_len + pre + post + 1) = [ws, we)
+                    max_new_tokens=args.window_pre + args.window_post + 1,
                 )
         except Exception as e:
             log.exception("Capture failed for problem=%d quant=%s mode=%s", pid, quant, mode)

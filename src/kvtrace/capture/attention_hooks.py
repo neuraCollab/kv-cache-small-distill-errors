@@ -26,28 +26,33 @@ import torch.nn as nn
 @dataclass
 class CaptureHandle:
     """Контейнер захваченных тензоров + метод снятия хуков и анпатча."""
-    q: list[torch.Tensor] = field(default_factory=list)
-    k_pre: list[torch.Tensor] = field(default_factory=list)
+    q: list[torch.Tensor] = field(default_factory=list)             # pre-RoPE
+    q_post_rope: list[torch.Tensor] = field(default_factory=list)   # post-RoPE
+    k_pre: list[torch.Tensor] = field(default_factory=list)         # post-RoPE (cache)
     v_pre: list[torch.Tensor] = field(default_factory=list)
     k_post: list[torch.Tensor] = field(default_factory=list)
     v_post: list[torch.Tensor] = field(default_factory=list)
     _hook_handles: list[Any] = field(default_factory=list)
     _patched_caches: list[Any] = field(default_factory=list)
+    _patched_rope_modules: list[tuple[Any, Any]] = field(default_factory=list)
 
     def remove(self) -> None:
         for h in self._hook_handles:
             h.remove()
         self._hook_handles.clear()
-        # Восстановить оригинальный update на запатченных классах cache.
-        # Patching на КЛАССЕ (не на instance), потому что некоторые места
-        # в transformers вызывают update через class-level access
-        # (Cls.update(self, ...)), что обходит instance-attribute patch.
+        # Восстановить cache.update (см. _patch_cache_update)
         for cache_cls in self._patched_caches:
             if hasattr(cache_cls, "_kv_capture_original_update"):
                 cache_cls.update = cache_cls._kv_capture_original_update
                 delattr(cache_cls, "_kv_capture_original_update")
                 delattr(cache_cls, "_kv_capture_patched")
         self._patched_caches.clear()
+        # Восстановить apply_rotary_pos_emb на модулях, где мы пропатчили
+        for module, original_fn in self._patched_rope_modules:
+            module.apply_rotary_pos_emb = original_fn
+            if hasattr(module, "_kv_capture_rope_patched"):
+                delattr(module, "_kv_capture_rope_patched")
+        self._patched_rope_modules.clear()
 
 
 def install_capture_hooks(
@@ -120,7 +125,37 @@ def install_capture_hooks(
         h_post = mod.register_forward_hook(_make_outputs_q_hook())
         handle._hook_handles.append(h_post)
 
+    # Patch apply_rotary_pos_emb для захвата post-RoPE Q.
+    # Делаем это глобально на модуле transformers.models.qwen3.modeling_qwen3,
+    # потому что Qwen3Attention.forward вызывает функцию через module-global lookup.
+    _patch_rope_for_q_post(handle)
+
     return handle
+
+
+def _patch_rope_for_q_post(handle: CaptureHandle) -> None:
+    """Monkey-patch apply_rotary_pos_emb в Qwen3 modeling module чтобы захватывать
+    post-RoPE Q. Необходимо для attention-map analysis (Q post-RoPE × K post-RoPE).
+
+    Идемпотентно: повторный патч — no-op. Restoration через handle.remove().
+    Если модуль qwen3 не импортирован — silently skip.
+    """
+    try:
+        from transformers.models.qwen3 import modeling_qwen3
+    except ImportError:
+        return
+    if getattr(modeling_qwen3, "_kv_capture_rope_patched", False):
+        return
+    original_arpe = modeling_qwen3.apply_rotary_pos_emb
+
+    def patched_arpe(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
+        q_rot, k_rot = original_arpe(q, k, cos, sin, position_ids, unsqueeze_dim)
+        handle.q_post_rope.append(q_rot.detach().clone())
+        return q_rot, k_rot
+
+    modeling_qwen3.apply_rotary_pos_emb = patched_arpe
+    modeling_qwen3._kv_capture_rope_patched = True
+    handle._patched_rope_modules.append((modeling_qwen3, original_arpe))
 
 
 def _patch_cache_update(

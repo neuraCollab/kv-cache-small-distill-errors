@@ -83,6 +83,10 @@ class CaptureRunner:
 
             ws, we = window.ws, window.we
             q_sliced = [_slice_q(t, ws, we) for t in handle.q]
+            q_post_rope_sliced = (
+                [_slice_kv(t, ws, we) for t in handle.q_post_rope]
+                if handle.q_post_rope else None
+            )
             k_pre_sliced = [_slice_kv(t, ws, we) for t in handle.k_pre]
             v_pre_sliced = [_slice_kv(t, ws, we) for t in handle.v_pre]
             k_post_sliced = [_slice_kv(t, ws, we) for t in handle.k_post]
@@ -92,6 +96,7 @@ class CaptureRunner:
             return _build_capture(
                 quant=quant,
                 mode="tf",
+                q_post_rope=q_post_rope_sliced,
                 problem_id=problem_id,
                 fdp_token_idx=fdp_token_idx,
                 window=window,
@@ -159,9 +164,18 @@ class CaptureRunner:
             v_pre_all = [_concat_seq(handle.v_pre[i::self._n_layers]) for i in range(self._n_layers)]
             k_post_all = [_concat_seq(handle.k_post[i::self._n_layers]) for i in range(self._n_layers)]
             v_post_all = [_concat_seq(handle.v_post[i::self._n_layers]) for i in range(self._n_layers)]
+            q_post_rope_all = (
+                [_concat_seq(handle.q_post_rope[i::self._n_layers])
+                 for i in range(self._n_layers)]
+                if handle.q_post_rope else None
+            )
 
             ws, we = window.ws, window.we
             q_sliced = [_slice_q(t, ws, we) for t in q_all]
+            q_post_rope_sliced = (
+                [_slice_kv(t, ws, we) for t in q_post_rope_all]
+                if q_post_rope_all else None
+            )
             k_pre_sliced = [_slice_kv(t, ws, we) for t in k_pre_all]
             v_pre_sliced = [_slice_kv(t, ws, we) for t in v_pre_all]
             k_post_sliced = [_slice_kv(t, ws, we) for t in k_post_all]
@@ -177,6 +191,7 @@ class CaptureRunner:
             return _build_capture(
                 quant=quant,
                 mode="ar",
+                q_post_rope=q_post_rope_sliced,
                 problem_id=problem_id,
                 fdp_token_idx=fdp_token_idx,
                 window=window,
@@ -275,6 +290,7 @@ def _build_capture(
     model_revision_hash: str,
     q: list[torch.Tensor],
     k_pre: list[torch.Tensor],
+    q_post_rope: list[torch.Tensor] | None = None,
     v_pre: list[torch.Tensor],
     k_post: list[torch.Tensor],
     v_post: list[torch.Tensor],
@@ -309,4 +325,5 @@ def _build_capture(
         k_post=k_post,
         v_post=v_post,
         logits=logits.to(torch.float16).contiguous(),
+        q_post_rope=q_post_rope,
     )
