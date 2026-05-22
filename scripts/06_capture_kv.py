@@ -111,8 +111,7 @@ def main() -> int:
     plan: list[tuple[int, str, str]] = []
     for pid in problem_ids:
         for q in args.quants:
-            modes_for_q = ["tf"] if q == "bf16" else args.modes
-            for m in modes_for_q:
+            for m in args.modes:
                 plan.append((pid, q, m))
 
     print(f"Total captures planned: {len(plan)}")
