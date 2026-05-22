@@ -5,12 +5,14 @@ import torch
 
 from kvtrace.capture.analysis import (
     align_captures_by_absolute_position,
+    attention_shift_kl,
     bf16_margin_trajectory,
     captures_share_window,
     compute_kv_value_stats_per_layer,
     compute_logits_kl_at_fdp,
     compute_relative_quant_error,
     logit_kl_trajectory,
+    outlier_channel_impact,
     per_position_kv_quant_noise,
     top_outlier_channels,
 )
@@ -176,6 +178,51 @@ def test_per_position_kv_quant_noise_nonzero_for_quant():
     noise = per_position_kv_quant_noise(cap)
     assert noise["k_noise"].max() > 0
     assert noise["v_noise"].max() > 0
+
+
+def test_attention_shift_kl_raises_without_q_post_rope():
+    cap = _make_cap(quant="fp8_e4m3")
+    # cap from _make_cap has no q_post_rope
+    try:
+        attention_shift_kl(cap)
+        assert False, "should have raised"
+    except ValueError as e:
+        assert "q_post_rope" in str(e)
+
+
+def test_attention_shift_kl_zero_for_bf16():
+    """k_pre == k_post → attention_pre == attention_post → KL = 0."""
+    cap = _make_cap(quant="bf16", W=8, n_layers=2, n_kv_heads=2, head_dim=4)
+    # Inject post-RoPE Q (faux, but enough to compute attention)
+    cap.q_post_rope = [
+        torch.randn(8, 2, 4, dtype=torch.float16) for _ in range(2)
+    ]
+    out = attention_shift_kl(cap)
+    assert out.shape == (2, 8)
+    assert out.abs().max().item() < 1e-3
+
+
+def test_attention_shift_kl_positive_for_quant():
+    cap = _make_cap(quant="fp8_e4m3", W=8, n_layers=2, n_kv_heads=2, head_dim=4)
+    cap.q_post_rope = [
+        torch.randn(8, 2, 4, dtype=torch.float16) for _ in range(2)
+    ]
+    out = attention_shift_kl(cap)
+    assert out.max().item() > 0
+
+
+def test_outlier_channel_impact_finds_injected():
+    cap = _make_cap(quant="fp8_e4m3", n_kv_heads=4, head_dim=8)
+    # Inject big noise in layer 0, head 1, channel 3
+    cap.k_post[0][:, 1, 3] = cap.k_pre[0][:, 1, 3] + 100.0  # huge delta
+    out = outlier_channel_impact(cap, top_n_channels=5)
+    layer0 = out[0]
+    # Top channel should be (1, 3)
+    top = layer0["top_channels"][0]
+    assert top["head"] == 1
+    assert top["channel"] == 3
+    # That single channel should dominate (>50% of noise)
+    assert top["frac"] > 0.5
 
 
 def test_top_outlier_channels_finds_high_values():

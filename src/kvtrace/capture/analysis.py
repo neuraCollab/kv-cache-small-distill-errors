@@ -152,28 +152,38 @@ def captures_share_window(cap_a: CaptureData, cap_b: CaptureData) -> bool:
 
 
 def logit_kl_trajectory(cap_a: CaptureData, cap_b: CaptureData) -> torch.Tensor:
-    """KL(p_a || p_b) at every position in the (shared) window.
+    """KL(p_a || p_b) at every position in the overlapping absolute-position window.
 
-    Возвращает Tensor[W] где [i] = KL дивергенция логит-распределений
-    в позиции window_start+i. Растущий KL вдоль траектории — прямое
-    свидетельство накопления квант-шума через слои.
+    Возвращает Tensor[overlap_length] где [i] = KL дивергенция логит-распределений
+    в i-й позиции overlapping region (absolute coords пересечения окон).
 
-    Требует одинакового окна. Иначе ValueError.
+    В AR-mode может различаться actual logits.shape[0] vs meta["W"] (early EOS
+    или off-by-one в run_ar). Используем фактические длины тензоров и
+    выравниваем по absolute position.
+
+    Raises ValueError если окна вообще не пересекаются.
     """
-    if not captures_share_window(cap_a, cap_b):
+    a_start = cap_a.meta["window_start"]
+    b_start = cap_b.meta["window_start"]
+    # Use actual tensor lengths (may be < meta W if AR early EOS)
+    a_end = a_start + cap_a.logits.shape[0]
+    b_end = b_start + cap_b.logits.shape[0]
+    overlap_start = max(a_start, b_start)
+    overlap_end = min(a_end, b_end)
+    if overlap_start >= overlap_end:
         raise ValueError(
-            f"Captures have different windows: "
-            f"{cap_a.meta['window_start']}-{cap_a.meta['window_end']} vs "
-            f"{cap_b.meta['window_start']}-{cap_b.meta['window_end']}"
+            f"Captures have no overlapping window: "
+            f"a=[{a_start},{a_end}) b=[{b_start},{b_end})"
         )
-    log_a = cap_a.logits.float()  # [W, vocab]
-    log_b = cap_b.logits.float()
+    sl_a = slice(overlap_start - a_start, overlap_end - a_start)
+    sl_b = slice(overlap_start - b_start, overlap_end - b_start)
+    log_a = cap_a.logits[sl_a].float()
+    log_b = cap_b.logits[sl_b].float()
     p_a = torch.softmax(log_a, dim=-1)
     p_b = torch.softmax(log_b, dim=-1)
     eps = 1e-12
-    # KL per position: Σ p_a * log(p_a / p_b)
     kl = (p_a * (torch.log(p_a + eps) - torch.log(p_b + eps))).sum(dim=-1)
-    return kl  # [W]
+    return kl  # [overlap_length]
 
 
 def bf16_margin_trajectory(cap_bf16: CaptureData) -> torch.Tensor:
@@ -251,6 +261,121 @@ def top_outlier_channels(
                 "n_channels_above_threshold": n_outliers,
                 "top_channels": channels,
             })
+    return results
+
+
+def attention_shift_kl(cap: CaptureData) -> torch.Tensor:
+    """Per-(layer, position) KL между attention(Q, K_pre) и attention(Q, K_post).
+
+    Quant noise в K вызывает сдвиг attention-распределения. Эта функция считает
+    насколько именно — для каждого слоя и каждой query-позиции KL between two
+    attention distributions over all key positions.
+
+    Требует q_post_rope (RoPE applied). Если capture без него (legacy bf16 от
+    старого кода), raises ValueError.
+
+    Returns Tensor[n_layers, W] — KL per (layer, query_position) usrедненный по headam
+    (для GQA repeat KV heads до num_q_heads).
+
+    Note: Q_pre-RoPE attention с K_post-RoPE даёт неверный результат (mixed
+    RoPE state). Q_post_rope обязателен.
+    """
+    if cap.q_post_rope is None:
+        raise ValueError(
+            "capture has no q_post_rope — re-capture with newer code "
+            "(see install_capture_hooks rope patch)"
+        )
+
+    n_layers = len(cap.q_post_rope)
+    W = cap.q_post_rope[0].shape[0]
+    head_dim = cap.q_post_rope[0].shape[-1]
+    num_q_heads = cap.q_post_rope[0].shape[1]
+    num_kv_heads = cap.k_pre[0].shape[1]
+    repeat = num_q_heads // num_kv_heads  # GQA factor
+
+    eps = 1e-12
+    scale = 1.0 / (head_dim ** 0.5)
+
+    # Causal mask: query i can only attend to key 0..i
+    causal_mask = torch.triu(torch.ones(W, W, dtype=torch.bool), diagonal=1)
+
+    out = torch.zeros(n_layers, W)
+    for layer in range(n_layers):
+        q = cap.q_post_rope[layer].float()  # [W, num_q_heads, head_dim]
+        k_pre = cap.k_pre[layer].float()    # [W, num_kv_heads, head_dim]
+        k_post = cap.k_post[layer].float()
+        # Repeat K for GQA: [W, num_kv_heads, head_dim] → [W, num_q_heads, head_dim]
+        if repeat > 1:
+            k_pre = k_pre.repeat_interleave(repeat, dim=1)
+            k_post = k_post.repeat_interleave(repeat, dim=1)
+
+        # Compute Q @ K^T per head, then softmax
+        # q: [W, H, D], k: [W, H, D]
+        # scores[h, i, j] = q[i, h] · k[j, h]
+        # → [W, H, W] = q_einsum
+        q_t = q.transpose(0, 1)  # [H, W, D]
+        kp_t = k_pre.transpose(0, 1)  # [H, W, D]
+        kq_t = k_post.transpose(0, 1)
+        scores_pre = torch.matmul(q_t, kp_t.transpose(-1, -2)) * scale  # [H, W, W]
+        scores_post = torch.matmul(q_t, kq_t.transpose(-1, -2)) * scale
+        # Causal mask
+        scores_pre = scores_pre.masked_fill(causal_mask, float("-inf"))
+        scores_post = scores_post.masked_fill(causal_mask, float("-inf"))
+        a_pre = torch.softmax(scores_pre, dim=-1)   # [H, W, W]
+        a_post = torch.softmax(scores_post, dim=-1)
+        # KL per (head, query): Σ_k a_pre log(a_pre/a_post)
+        kl = (a_pre * (torch.log(a_pre + eps) - torch.log(a_post + eps))).sum(dim=-1)  # [H, W]
+        # Mean over heads
+        out[layer] = kl.mean(dim=0)
+    return out
+
+
+def outlier_channel_impact(
+    cap: CaptureData, top_n_channels: int = 10
+) -> dict:
+    """Какая доля общего K-quant-noise приходится на top-N outlier-каналов?
+
+    Для каждого слоя ℓ:
+      total_noise = ||K_post - K_pre||_F²
+      Identifies каналы (kv_head, channel) с максимальным per-channel вкладом
+      в noise = ||(K_post - K_pre)[:, h, c]||² per (h, c).
+      Сортирует, возвращает top-N + их fraction of total.
+
+    Returns list[dict] per layer:
+      {layer, total_noise, top_channels: [{head, channel, noise, frac}],
+       top_n_fraction: total fraction explained by top_n}
+    """
+    results = []
+    for layer in range(len(cap.k_pre)):
+        kp = cap.k_pre[layer].float()
+        kq = cap.k_post[layer].float()
+        delta = kq - kp  # [W, num_kv_heads, head_dim]
+        # Per-(head, channel) squared noise summed over W positions
+        per_channel = (delta ** 2).sum(dim=0)  # [num_kv_heads, head_dim]
+        total = float(per_channel.sum())
+        if total < 1e-12:
+            results.append({"layer": layer, "total_noise": 0.0,
+                            "top_channels": [], "top_n_fraction": 0.0})
+            continue
+        flat = per_channel.flatten()
+        num_heads, head_dim = per_channel.shape
+        top_vals, top_idx = flat.topk(min(top_n_channels, len(flat)))
+        channels = []
+        for v, idx in zip(top_vals.tolist(), top_idx.tolist()):
+            head = idx // head_dim
+            ch = idx % head_dim
+            channels.append({
+                "head": head, "channel": ch,
+                "noise": float(v),
+                "frac": float(v / total),
+            })
+        top_n_fraction = sum(c["frac"] for c in channels)
+        results.append({
+            "layer": layer,
+            "total_noise": total,
+            "top_channels": channels,
+            "top_n_fraction": top_n_fraction,
+        })
     return results
 
 
