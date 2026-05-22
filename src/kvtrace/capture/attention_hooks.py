@@ -54,8 +54,14 @@ def install_capture_hooks(
     model: nn.Module,
     attention_modules: list[nn.Module],
     quant_fn: Callable[[torch.Tensor], torch.Tensor],
+    quant_only_layers: set[int] | None = None,
 ) -> CaptureHandle:
-    """Установить хуки для захвата Q/K/V/quantized-K/V с реальным quant в forward."""
+    """Установить хуки для захвата Q/K/V/quantized-K/V с реальным quant в forward.
+
+    Args:
+        quant_only_layers: если не None, квант применяется ТОЛЬКО к этим слоям
+            (остальные используют bf16). Для layer-ablation studies.
+    """
     handle = CaptureHandle()
 
     def _make_q_proj_hook():
@@ -82,7 +88,7 @@ def install_capture_hooks(
             cache_cls = type(pkv)
             if getattr(cache_cls, "_kv_capture_patched", False):
                 return None  # класс уже запатчен
-            _patch_cache_update(cache_cls, quant_fn, handle)
+            _patch_cache_update(cache_cls, quant_fn, handle, quant_only_layers)
             handle._patched_caches.append(cache_cls)
             return None
         return _pre_hook
@@ -117,19 +123,22 @@ def install_capture_hooks(
     return handle
 
 
-def _patch_cache_update(cache_cls: type, quant_fn: Callable, handle: CaptureHandle) -> None:
+def _patch_cache_update(
+    cache_cls: type,
+    quant_fn: Callable,
+    handle: CaptureHandle,
+    quant_only_layers: set[int] | None = None,
+) -> None:
     """Заменить cache_cls.update (метод КЛАССА) на квантующую версию.
 
     Class-level patch нужен потому что некоторые места в transformers вызывают
     `Cls.update(self, ...)` напрямую — это обходит instance-attribute patching.
 
-    Эффект: attention.forward вызывает self.past_key_value.update(K, V) →
-    наш патч сохраняет K_pre, квантует, сохраняет K_post, и передаёт
-    квантованные K_q, V_q в оригинальный update. Cache хранит K_q,
-    attention читает K_q, логиты получаются quant-quality.
+    Если quant_only_layers задан, квант применяется ТОЛЬКО на этих слоях.
+    На остальных вызывается оригинальный update без модификации K, V — bf16.
+    Это для layer-ablation studies (см. scripts/10_layer_ablation.py).
 
     Restoration: handle.remove() возвращает оригинальный update класса.
-    Идемпотентность: повторный patch при уже запатченном классе — no-op.
     """
     original_update = cache_cls.update
 
@@ -138,13 +147,17 @@ def _patch_cache_update(cache_cls: type, quant_fn: Callable, handle: CaptureHand
         handle.k_pre.append(key_states.detach().clone())
         handle.v_pre.append(value_states.detach().clone())
 
-        # Квантуем
+        if quant_only_layers is not None and layer_idx not in quant_only_layers:
+            # Этот слой не квантуем — пропускаем через оригинал
+            handle.k_post.append(key_states.detach().clone())
+            handle.v_post.append(value_states.detach().clone())
+            return original_update(self, key_states, value_states, layer_idx, cache_kwargs)
+
         k_q = quant_fn(key_states)
         v_q = quant_fn(value_states)
         handle.k_post.append(k_q.detach().clone())
         handle.v_post.append(v_q.detach().clone())
 
-        # В cache летит quantized — attention увидит K_q
         return original_update(self, k_q, v_q, layer_idx, cache_kwargs)
 
     cache_cls.update = quantized_update
