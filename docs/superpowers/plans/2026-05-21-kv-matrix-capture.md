@@ -143,13 +143,18 @@ def test_changes_values_for_random_input():
     assert not torch.equal(fp8_e5m2(x), x)
 
 
-def test_e4m3_narrower_range_than_e5m2():
-    """e4m3 имеет меньший max; большие значения должны клипаться сильнее."""
-    big = torch.tensor([400.0, -400.0], dtype=torch.bfloat16)
-    out_e4m3 = fp8_e4m3(big)
-    out_e5m2 = fp8_e5m2(big)
-    # e4m3 max ≈ 448, e5m2 max ≈ 57344 → e5m2 ближе к оригиналу
-    assert (out_e5m2 - big).abs().sum() < (out_e4m3 - big).abs().sum()
+def test_e4m3_more_precise_than_e5m2_within_range():
+    """Внутри ±448 (диапазон e4m3) e4m3 точнее e5m2 — больше mantissa bits.
+
+    e4m3: 4 expo / 3 mantissa → max ≈ 448, шаг внутри binade [256, 512) = 32
+    e5m2: 5 expo / 2 mantissa → max ≈ 57344, шаг внутри binade [256, 512) = 64
+    Поэтому в общем диапазоне ошибка квантования у e4m3 меньше.
+    """
+    torch.manual_seed(0)
+    x = torch.randn(4096, dtype=torch.bfloat16) * 10  # range ~±30, well in both
+    err_e4m3 = (fp8_e4m3(x) - x).abs().sum()
+    err_e5m2 = (fp8_e5m2(x) - x).abs().sum()
+    assert err_e4m3 < err_e5m2
 
 
 def test_quant_fns_registry_keys():

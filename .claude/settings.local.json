@@ -57,7 +57,22 @@
       "Bash(git pull *)",
       "Bash(py -3.13 -c ' *)",
       "Bash(py -3.13 -m pytest -m \"not gpu and not live_api\")",
-      "Bash(py -3.13 -m pytest -m \"not gpu and not live_api\" --cov=src/kvtrace --cov-fail-under=85)"
+      "Bash(py -3.13 -m pytest -m \"not gpu and not live_api\" --cov=src/kvtrace --cov-fail-under=85)",
+      "Bash(tail -n 100 \"C:/Users/morro/.claude/projects/C--Users-morro-prog-files/d47fd284-50f6-452d-bcc8-03158c414624.jsonl\")",
+      "Read(//tmp/**)",
+      "Bash(awk 'NR==3' \"C:/Users/morro/prog/files/.tmp_tail.jsonl\")",
+      "Bash(awk 'NR==11' \"C:/Users/morro/prog/files/.tmp_tail.jsonl\")",
+      "Bash(python -c \"import json,sys; d=json.loads\\(sys.stdin.read\\(\\)\\); print\\(json.dumps\\({k:\\(type\\(v\\).__name__ if not isinstance\\(v,\\(str,int,float,bool\\)\\) else v\\) for k,v in d.items\\(\\)}, indent=2\\)\\)\")",
+      "Bash(python -c \"import json,sys; d=json.loads\\(sys.stdin.read\\(\\)\\); print\\(list\\(d.keys\\(\\)\\)\\); print\\('boxed_match:', d.get\\('boxed_match'\\)\\); print\\('fdp_token_idx:', d.get\\('fdp_token_idx'\\)\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(python scripts/05_paper_analysis.py)",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(where python *)",
+      "Bash(python -m pip install matplotlib scipy numpy)",
+      "Bash(python -c \"import matplotlib, scipy, numpy; print\\('ok'\\)\")",
+      "Bash(python -c \"import matplotlib, scipy, numpy\")",
+      "Bash(where pdflatex *)",
+      "Bash(pdflatex -interaction=nonstopmode -halt-on-error report.tex)"
     ]
   }
 }
