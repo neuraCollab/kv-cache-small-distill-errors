@@ -40,7 +40,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--captures-dir", type=Path,
                    default=Path("outputs/kv_capture/qwen3-1.7b"))
     p.add_argument("--quant", default="fp8_e4m3", choices=["fp8_e4m3", "fp8_e5m2"])
-    p.add_argument("--mode", default="tf", choices=["tf", "ar"])
+    p.add_argument("--mode", default="tf",
+                   choices=["tf", "ar", "tf_prompt"])
     p.add_argument("--top-n", type=int, default=20,
                    help="Top-N каналов на слой")
     p.add_argument("--output-dir", type=Path, default=None)
