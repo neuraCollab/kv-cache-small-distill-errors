@@ -28,10 +28,61 @@ def _identity(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
+def _hqq_quant_dequant(
+    x: torch.Tensor, n_bits: int, group_size: int = 64
+) -> torch.Tensor:
+    """Real HQQ (Half-Quadratic Quantization) через `hqq` пакет.
+
+    Делает proper HQ optimization: minimize ||W - dequant(quant(W; s, z))||_p
+    с p<2 (robust к outliers). Это то, что используется в
+    `transformers.QuantizedCacheConfig(backend="hqq")`.
+
+    Args:
+        x: bf16 tensor any shape
+        n_bits: 4 (INT4) или 2 (INT2)
+        group_size: HQQ default 64
+    Returns:
+        bf16 tensor same shape, after quant→dequant
+    """
+    from hqq.core.quantize import Quantizer
+    orig_shape = x.shape
+    orig_dtype = x.dtype
+    x_float = x.float().flatten()
+    n = x_float.numel()
+    # Pad to multiple of group_size (HQQ requires this)
+    n_pad = (group_size - n % group_size) % group_size
+    if n_pad > 0:
+        x_float = torch.cat([x_float, torch.zeros(n_pad, dtype=x_float.dtype)])
+    # HQQ.quantize ожидает 1D или 2D. 1D с group_size работает корректно.
+    W_q, meta = Quantizer.quantize(
+        x_float, nbits=n_bits, group_size=group_size, axis=0,
+        optimize=True, device="cpu",
+    )
+    dq = Quantizer.dequantize(W_q, meta)  # flat shape
+    return dq.flatten()[:n].view(orig_shape).to(orig_dtype)
+
+
+def hqq_int4(x: torch.Tensor, group_size: int = 64) -> torch.Tensor:
+    """Real HQQ INT4 — proximal HQ optimization, group_size=64."""
+    return _hqq_quant_dequant(x, n_bits=4, group_size=group_size)
+
+
+def hqq_int2(x: torch.Tensor, group_size: int = 64) -> torch.Tensor:
+    """Real HQQ INT2."""
+    return _hqq_quant_dequant(x, n_bits=2, group_size=group_size)
+
+
+# Legacy names для backwards-compat с тестами / external scripts
+int4_minmax = hqq_int4
+int2_minmax = hqq_int2
+
+
 QUANT_FNS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "bf16": _identity,
     "fp8_e4m3": fp8_e4m3,
     "fp8_e5m2": fp8_e5m2,
+    "hqq_int4": hqq_int4,
+    "hqq_int2": hqq_int2,
 }
 
 
