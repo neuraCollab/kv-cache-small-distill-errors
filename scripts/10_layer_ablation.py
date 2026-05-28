@@ -43,7 +43,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--captures-dir", type=Path,
                    default=Path("outputs/kv_capture/qwen3-1.7b"))
     p.add_argument("--traces-dir", type=Path, default=Path("outputs/traces"))
-    p.add_argument("--quant", default="fp8_e4m3", choices=["fp8_e4m3", "fp8_e5m2"])
+    p.add_argument("--quant", default="fp8_e4m3",
+                   choices=["fp8_e4m3", "fp8_e5m2", "hqq_int4", "hqq_int2"])
     p.add_argument("--n-problems", type=int, default=5)
     p.add_argument("--problems", default=None,
                    help="'0,1,2' for explicit list; overrides --n-problems")
