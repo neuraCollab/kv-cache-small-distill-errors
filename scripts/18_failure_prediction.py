@@ -83,10 +83,12 @@ def _compute_features(cap_bf16, cap_quant, n_early: int) -> dict:
     import torch
     if cap_bf16.meta["window_start"] != cap_quant.meta["window_start"]:
         return None
-    log_b = cap_bf16.logits[:n_early].float()
-    log_q = cap_quant.logits[:n_early].float()
-    if log_b.shape[0] < 5 or log_q.shape[0] < 5:
+    # Same start but possibly different end → take overlap
+    n_take = min(cap_bf16.logits.shape[0], cap_quant.logits.shape[0], n_early)
+    if n_take < 5:
         return None
+    log_b = cap_bf16.logits[:n_take].float()
+    log_q = cap_quant.logits[:n_take].float()
     p_b = torch.softmax(log_b, dim=-1)
     p_q = torch.softmax(log_q, dim=-1)
     eps = 1e-12
@@ -202,7 +204,7 @@ def main() -> int:
             for p, l, pred in zip(pids, y, loo_preds)
         ],
     }
-    out_json = output_dir / f"failure_prediction_{args.quant}.json"
+    out_json = output_dir / f"failure_prediction_{args.quant}_n{args.n_early}.json"
     out_json.write_text(json.dumps(summary, indent=2))
     log.info("Saved %s", out_json)
 
