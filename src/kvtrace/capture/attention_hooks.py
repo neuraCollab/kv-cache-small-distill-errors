@@ -188,8 +188,15 @@ def _patch_cache_update(
             handle.v_post.append(value_states.detach().clone())
             return original_update(self, key_states, value_states, layer_idx, cache_kwargs)
 
-        k_q = quant_fn(key_states)
-        v_q = quant_fn(value_states)
+        # quant_fn может быть либо одноаргументной (K) → K_q, либо
+        # двухаргументной (K, layer_idx) → K_q для layer-aware defense.
+        # Inspect via try/except — простая, robust к разным signature'ам.
+        try:
+            k_q = quant_fn(key_states, layer_idx)
+            v_q = quant_fn(value_states, layer_idx)
+        except TypeError:
+            k_q = quant_fn(key_states)
+            v_q = quant_fn(value_states)
         handle.k_post.append(k_q.detach().clone())
         handle.v_post.append(v_q.detach().clone())
 

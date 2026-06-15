@@ -77,12 +77,61 @@ int4_minmax = hqq_int4
 int2_minmax = hqq_int2
 
 
+def fp8_e4m3_protected_top10(K: torch.Tensor) -> torch.Tensor:
+    """FP8 e4m3 c защитой top-10 outlier каналов в bf16 (paper's recommended defense).
+
+    Per-call: пересчитывает outliers на каждом вызове. Для AR generation это плохо
+    (на decode шаге seq=1, top-10 нестабилен). Используется в TF mode где seq>>1.
+    Для AR используйте make_calibrated_defense().
+    """
+    outliers = identify_top_outlier_channels(K, top_n=10)
+    return fp8_skip_outliers(K, outliers, base_fn=fp8_e4m3)
+
+
+def fp8_e4m3_protected_top100(K: torch.Tensor) -> torch.Tensor:
+    """FP8 e4m3 c защитой top-100 каналов (~10% памяти в bf16)."""
+    outliers = identify_top_outlier_channels(K, top_n=100)
+    return fp8_skip_outliers(K, outliers, base_fn=fp8_e4m3)
+
+
+def make_calibrated_defense(
+    calibration_K_per_layer: dict[int, torch.Tensor],
+    top_n: int = 10,
+    base_fn: Callable[[torch.Tensor], torch.Tensor] = fp8_e4m3,
+) -> Callable[[torch.Tensor, int], torch.Tensor]:
+    """Создать calibrated defense quant: outliers фиксируются ОДИН РАЗ из
+    calibration K samples (per layer), потом неизменно используются на всех вызовах.
+
+    Это правильный SmoothQuant/AWQ-style паттерн.
+
+    Args:
+        calibration_K_per_layer: {layer_idx: K_tensor} - representative K samples
+        top_n: количество каналов для защиты per layer
+        base_fn: фоновая quant функция
+    Returns:
+        callable(K, layer_idx) -> K_quant — функция с фиксированной outliers map
+    """
+    fixed_outliers: dict[int, list[tuple[int, int]]] = {}
+    for layer_idx, K_calib in calibration_K_per_layer.items():
+        fixed_outliers[layer_idx] = identify_top_outlier_channels(K_calib, top_n)
+
+    def defense_fn(K: torch.Tensor, layer_idx: int) -> torch.Tensor:
+        outliers = fixed_outliers.get(layer_idx, [])
+        if not outliers:
+            return base_fn(K)
+        return fp8_skip_outliers(K, outliers, base_fn=base_fn)
+
+    return defense_fn
+
+
 QUANT_FNS: dict[str, Callable[[torch.Tensor], torch.Tensor]] = {
     "bf16": _identity,
     "fp8_e4m3": fp8_e4m3,
     "fp8_e5m2": fp8_e5m2,
     "hqq_int4": hqq_int4,
     "hqq_int2": hqq_int2,
+    "fp8_e4m3_top10": fp8_e4m3_protected_top10,
+    "fp8_e4m3_top100": fp8_e4m3_protected_top100,
 }
 
 
@@ -93,31 +142,48 @@ def fp8_skip_outliers(
 ) -> torch.Tensor:
     """Quant K через base_fn, КРОМЕ перечисленных (head, channel) — те остаются bf16.
 
-    Симулирует per-channel defense: top-N outlier-каналов сохраняются
-    в bf16, остальные ~1014 каналов квантуются FP8.
+    Поддерживает оба layout'а:
+      - 3D [W, num_kv_heads, head_dim] (saved capture format)
+      - 4D [B, num_kv_heads, seq, head_dim] (HF cache layout, live attention)
 
     Args:
-        K: [W, num_kv_heads, head_dim]
-        outlier_channels: [(head, channel), ...] — индексы skip-quant
-        base_fn: фоновая quant-функция (default fp8_e4m3)
-    Returns:
-        K_alt same shape, dtype = K.dtype
+        K: 3D или 4D tensor
+        outlier_channels: [(head, channel), ...]
+        base_fn: фоновая quant-функция
     """
     if not outlier_channels:
         return base_fn(K)
     out = base_fn(K).clone()
-    for head, channel in outlier_channels:
-        out[:, head, channel] = K[:, head, channel]
+    if K.dim() == 4:
+        # [B, num_kv_heads, seq, head_dim] — head at dim 1, channel at dim 3
+        for head, channel in outlier_channels:
+            out[:, head, :, channel] = K[:, head, :, channel]
+    elif K.dim() == 3:
+        # [W, num_kv_heads, head_dim] — head at dim 1, channel at dim 2
+        for head, channel in outlier_channels:
+            out[:, head, channel] = K[:, head, channel]
+    else:
+        raise ValueError(f"K must be 3D or 4D, got dim={K.dim()}")
     return out
 
 
 def identify_top_outlier_channels(
     K: torch.Tensor, top_n: int
 ) -> list[tuple[int, int]]:
-    """Top-N каналов (head, channel) с наибольшим max|K[:, head, channel]|."""
+    """Top-N каналов (head, channel) с наибольшим max|K[..., head, ..., channel]|.
+
+    Поддерживает 3D [W, h, d] и 4D [B, h, seq, d].
+    """
     if top_n <= 0:
         return []
-    max_per = K.abs().amax(dim=0)  # [num_heads, head_dim]
+    if K.dim() == 4:
+        # [B, h, seq, d] → max over (B, seq) → [h, d]
+        max_per = K.abs().amax(dim=(0, 2))
+    elif K.dim() == 3:
+        # [W, h, d] → max over W → [h, d]
+        max_per = K.abs().amax(dim=0)
+    else:
+        raise ValueError(f"K must be 3D or 4D, got dim={K.dim()}")
     num_heads, head_dim = max_per.shape
     flat = max_per.flatten()
     top_n = min(top_n, len(flat))

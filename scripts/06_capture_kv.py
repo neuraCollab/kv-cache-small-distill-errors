@@ -29,6 +29,7 @@ MODEL_HF_IDS = {
     "qwen3-1.7b": "Qwen/Qwen3-1.7B",
     "qwen3-4b": "Qwen/Qwen3-4B",  # ~8GB bf16 — cross-arch validation на 15GB RAM
     "qwen3-8b": "Qwen/Qwen3-8B",  # ~16GB bf16 — нужно >=24GB RAM
+    "deepseek-r1-distill-qwen-1.5b": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
 }
 
 
